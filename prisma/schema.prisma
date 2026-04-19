@@ -1,0 +1,136 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  tier         String   @default("free")
+  tokensUsed   Int      @default(0)
+  tokenLimit   Int      @default(10000)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  documents     Document[]
+  conversations Conversation[]
+  usageLogs     UsageLog[]
+  refreshTokens RefreshToken[]
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Document {
+  id            String   @id @default(uuid())
+  userId        String
+  title         String
+  filename      String
+  content       String
+  mimeType      String?
+  fileSizeBytes Int?
+  chunkCount    Int      @default(0)
+  status        String   @default("pending")
+  error         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chunks   Chunk[]
+  messages Message[]
+
+  @@index([userId])
+  @@index([status])
+}
+
+model Chunk {
+  id         String   @id @default(uuid())
+  documentId String
+  index      Int
+  content    String
+  tokenCount Int
+  createdAt  DateTime @default(now())
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, index])
+  @@index([documentId])
+}
+
+model Conversation {
+  id        String   @id @default(uuid())
+  userId    String
+  title     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@index([userId])
+}
+
+model Message {
+  id               String   @id @default(uuid())
+  conversationId   String
+  documentId       String?
+  role             String
+  content          String
+  sources          String?
+  confidence       String?
+  promptTokens     Int?
+  completionTokens Int?
+  costUsd          Float?
+  latencyMs        Int?
+  createdAt        DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  document     Document?    @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId])
+  @@index([documentId])
+}
+
+model UsageLog {
+  id        String   @id @default(uuid())
+  userId    String
+  action    String
+  tokens    Int
+  costUsd   Float
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model AITrace {
+  id        String   @id @default(uuid())
+  traceId   String   @unique
+  userId    String?
+  operation String
+  data      Json
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([operation])
+}
