@@ -6,6 +6,11 @@ node_modules/
 # Build
 dist/
 build/
+*.js.map
+
+# Only ignore root-level .js files, not config files you intentionally write as .js
+/src/**/*.js
+/src/**/*.d.ts
 
 # Environment
 .env
