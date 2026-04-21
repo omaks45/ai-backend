@@ -7,10 +7,21 @@ import * as bcrypt from 'bcrypt';
 import { AuthService } from './auths.service';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
+import { RbacService } from '../rbac/rbac.service';
+
+// ── Mocks ─────────────────────────────────────────────────────────────────────
 
 const mockPrisma = {
-  user: { findUnique: jest.fn(), create: jest.fn() },
-  refreshToken: { findUnique: jest.fn(), create: jest.fn(), delete: jest.fn(), deleteMany: jest.fn() },
+  user: {
+    findUnique: jest.fn(),
+    create: jest.fn(),
+  },
+  refreshToken: {
+    create: jest.fn(),
+    findUnique: jest.fn(),
+    delete: jest.fn(),
+    deleteMany: jest.fn(),
+  },
 };
 
 const mockJwt = {
@@ -18,14 +29,23 @@ const mockJwt = {
   verify: jest.fn(),
 };
 
-const mockConfig = { get: jest.fn((key: string, fallback?: any) => fallback ?? key) };
+const mockConfig = {
+  get: jest.fn((key: string, fallback?: any) => fallback ?? key),
+};
 
 const mockRedis = {
-  blacklistToken: jest.fn(),
+  blacklistToken: jest.fn().mockResolvedValue(undefined),
   isTokenBlacklisted: jest.fn().mockResolvedValue(false),
 };
 
 const mockEvents = { emit: jest.fn() };
+
+// Added in Week 2 — must be present or NestJS DI fails
+const mockRbac = {
+  assignDefaultRole: jest.fn().mockResolvedValue(undefined),
+};
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('AuthService', () => {
   let service: AuthService;
@@ -34,11 +54,12 @@ describe('AuthService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuthService,
-        { provide: PrismaService, useValue: mockPrisma },
-        { provide: JwtService, useValue: mockJwt },
-        { provide: ConfigService, useValue: mockConfig },
-        { provide: RedisService, useValue: mockRedis },
-        { provide: EventEmitter2, useValue: mockEvents },
+        { provide: PrismaService,  useValue: mockPrisma  },
+        { provide: JwtService,     useValue: mockJwt     },
+        { provide: ConfigService,  useValue: mockConfig  },
+        { provide: RedisService,   useValue: mockRedis   },
+        { provide: EventEmitter2,  useValue: mockEvents  },
+        { provide: RbacService,    useValue: mockRbac    }, // ← was missing
       ],
     }).compile();
 
@@ -46,7 +67,7 @@ describe('AuthService', () => {
     jest.clearAllMocks();
   });
 
-  // ── register ──────────────────────────────────────────────
+  // ── register ────────────────────────────────────────────────────────────────
 
   describe('register', () => {
     it('creates a user and returns safe fields only', async () => {
@@ -68,7 +89,11 @@ describe('AuthService', () => {
 
     it('hashes the password before storing', async () => {
       mockPrisma.user.findUnique.mockResolvedValue(null);
-      mockPrisma.user.create.mockResolvedValue({ id: 'uuid-1', email: 'a@b.com', tier: 'free' });
+      mockPrisma.user.create.mockResolvedValue({
+        id: 'uuid-1',
+        email: 'a@b.com',
+        tier: 'free',
+      });
 
       await service.register({ email: 'a@b.com', password: 'SecurePass1' });
 
@@ -87,15 +112,35 @@ describe('AuthService', () => {
 
     it('emits auth.user.registered event', async () => {
       mockPrisma.user.findUnique.mockResolvedValue(null);
-      mockPrisma.user.create.mockResolvedValue({ id: 'uuid-1', email: 'a@b.com', tier: 'free' });
+      mockPrisma.user.create.mockResolvedValue({
+        id: 'uuid-1',
+        email: 'a@b.com',
+        tier: 'free',
+      });
 
       await service.register({ email: 'a@b.com', password: 'SecurePass1' });
 
-      expect(mockEvents.emit).toHaveBeenCalledWith('auth.user.registered', expect.objectContaining({ email: 'a@b.com' }));
+      expect(mockEvents.emit).toHaveBeenCalledWith(
+        'auth.user.registered',
+        expect.objectContaining({ email: 'a@b.com' }),
+      );
+    });
+
+    it('assigns default role after registration', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue(null);
+      mockPrisma.user.create.mockResolvedValue({
+        id: 'uuid-1',
+        email: 'a@b.com',
+        tier: 'free',
+      });
+
+      await service.register({ email: 'a@b.com', password: 'SecurePass1' });
+
+      expect(mockRbac.assignDefaultRole).toHaveBeenCalledWith('uuid-1');
     });
   });
 
-  // ── login ─────────────────────────────────────────────────
+  // ── login ────────────────────────────────────────────────────────────────────
 
   describe('login', () => {
     const makeUserWithHash = async (password = 'CorrectPass1') => ({
@@ -103,7 +148,7 @@ describe('AuthService', () => {
       email: 'user@example.com',
       tier: 'free',
       isActive: true,
-      passwordHash: await bcrypt.hash(password, 4), // 4 rounds for speed
+      passwordHash: await bcrypt.hash(password, 4), // 4 rounds for test speed
     });
 
     it('returns tokens and user for valid credentials', async () => {
@@ -111,7 +156,10 @@ describe('AuthService', () => {
       mockPrisma.user.findUnique.mockResolvedValue(user);
       mockPrisma.refreshToken.create.mockResolvedValue({});
 
-      const result = await service.login({ email: 'user@example.com', password: 'CorrectPass1' });
+      const result = await service.login({
+        email: 'user@example.com',
+        password: 'CorrectPass1',
+      });
 
       expect(result).toHaveProperty('accessToken');
       expect(result).toHaveProperty('refreshToken');
@@ -140,12 +188,18 @@ describe('AuthService', () => {
     });
 
     it('wrong email and wrong password return identical error messages', async () => {
+      // Wrong email
       mockPrisma.user.findUnique.mockResolvedValue(null);
-      const errorA = await service.login({ email: 'none@x.com', password: 'P' }).catch((e) => e);
+      const errorA = await service
+        .login({ email: 'none@x.com', password: 'P' })
+        .catch((e) => e);
 
+      // Wrong password
       const user = await makeUserWithHash();
       mockPrisma.user.findUnique.mockResolvedValue(user);
-      const errorB = await service.login({ email: 'user@example.com', password: 'WrongPass1' }).catch((e) => e);
+      const errorB = await service
+        .login({ email: 'user@example.com', password: 'WrongPass1' })
+        .catch((e) => e);
 
       expect(errorA.message).toBe(errorB.message);
     });
@@ -155,7 +209,10 @@ describe('AuthService', () => {
 
       await service.login({ email: 'x@x.com', password: 'P' }).catch(() => {});
 
-      expect(mockEvents.emit).toHaveBeenCalledWith('auth.login.failed', expect.objectContaining({ email: 'x@x.com' }));
+      expect(mockEvents.emit).toHaveBeenCalledWith(
+        'auth.login.failed',
+        expect.objectContaining({ email: 'x@x.com' }),
+      );
     });
 
     it('throws UnauthorizedException for inactive user', async () => {
