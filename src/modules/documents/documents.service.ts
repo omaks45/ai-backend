@@ -4,6 +4,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { RbacService } from '../rbac/rbac.service';
 import { CreateDocumentDto } from './dto/create-document.dto';
 import { ListDocumentsDto } from './dto/list-documents.dto';
+import { DocumentProcessorService } from '../jobs/document-processor.service';
 
 // Active document filter — reused in every query
 const ACTIVE = { deletedAt: null };
@@ -14,8 +15,10 @@ export class DocumentsService {
     private readonly prisma: PrismaService,
     private readonly rbac: RbacService,
     private readonly events: EventEmitter2,
+    private readonly processor: DocumentProcessorService,
   ) {}
 
+  
   async create(dto: CreateDocumentDto, userId: string) {
     const doc = await this.prisma.document.create({
       data: {
@@ -27,13 +30,11 @@ export class DocumentsService {
       },
     });
 
-    this.events.emit('document.created', {
-      userId,
-      documentId: doc.id,
-      title: doc.title,
-    });
+    const jobId = await this.processor.enqueue(doc.id, userId);
 
-    return doc;
+    this.events.emit('document.created', { userId, documentId: doc.id, title: doc.title });
+
+    return { ...doc, jobId };
   }
 
   async findAll(userId: string, query: ListDocumentsDto) {
