@@ -6,11 +6,13 @@ import { AuthService } from './auths.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
+import { RbacModule } from '../rbac/rbac.module';
 
 @Module({
   imports: [
     PassportModule,
     JwtModule.register({}), // secrets set per-call in service
+    RbacModule,
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtStrategy, PrismaService, RedisService],
