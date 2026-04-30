@@ -8,6 +8,9 @@ import {
 import { Reflector } from '@nestjs/core';
 import { RbacService } from '../../modules/rbac/rbac.service';
 
+/**
+ * A guard that checks if the authenticated user has the required permissions to access a route.
+ */
 export const PERMISSIONS_KEY = 'permissions';
 export const RequirePermissions = (...permissions: string[]) =>
     SetMetadata(PERMISSIONS_KEY, permissions);
@@ -31,6 +34,7 @@ export class PermissionsGuard implements CanActivate {
         const { user } = context.switchToHttp().getRequest();
         if (!user) throw new ForbiddenException('Not authenticated');
 
+        /** Load the user's permissions from the RBAC service. */
         const userPermissions = await this.rbac.getUserPermissions(user.id);
         const missing = required.filter((p) => !userPermissions.has(p));
 

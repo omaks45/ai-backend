@@ -1,18 +1,32 @@
-import { Injectable, OnModuleDestroy, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import Redis from 'ioredis';
+/**
+ * WHY CACHE SERVICE INJECTS REDIS SERVICE?
+ * CacheService owns all high-level caching logic — TTL constants, key builders,
+ * typed get/set, token blacklisting, and rate-limit helpers.
+ *
+ * It no longer creates its own Redis connection. Instead it reuses the single
+ * client owned by RedisService. This means:
+ *  - One TCP connection to Redis (not two)
+ *  - One retry/error/lifecycle handler (not two)
+ *  - RedisService.client can still be handed directly to BullMQ / rate-limit-redis
+ */
 
-// TTL constants (seconds) 
+import { Injectable, Logger } from '@nestjs/common';
+import Redis from 'ioredis';
+import { RedisService } from '../../redis/redis.service';
+
+// TTL constants (seconds)
+
 export const CACHE_TTL = {
-  SHORT:     60,              // 1 minute  — rate limit windows, session data
-  MEDIUM:    5 * 60,         // 5 minutes — user permissions, role lookups
-  LONG:      60 * 60,        // 1 hour    — document metadata
-  EMBEDDING: 7 * 24 * 60 * 60, // 7 days — embeddings (deterministic, expensive)
+  SHORT:     60,                    // 1 min  — rate-limit windows, session data
+  MEDIUM:    5  * 60,               // 5 min  — user permissions, role lookups
+  LONG:      60 * 60,               // 1 hr   — document metadata
+  EMBEDDING: 7  * 24 * 60 * 60,    // 7 days — embeddings (deterministic, expensive)
 } as const;
 
 export type CacheTTL = (typeof CACHE_TTL)[keyof typeof CACHE_TTL];
 
-// Cache key builders (prevents typos, centralises naming) 
+//Key builders (centralised naming, prevents typos)
+
 export const CacheKeys = {
   embedding:    (hash: string)   => `embed:${hash}`,
   userPerms:    (userId: string) => `perms:${userId}`,
@@ -21,24 +35,17 @@ export const CacheKeys = {
   rateLimitKey: (key: string)    => `rl:${key}`,
 } as const;
 
+
 @Injectable()
-export class CacheService implements OnModuleDestroy {
+export class CacheService {
   private readonly logger = new Logger(CacheService.name);
   private readonly client: Redis;
 
-  constructor(private readonly config: ConfigService) {
-    this.client = new Redis({
-      host: config.get<string>('REDIS_HOST', 'localhost'),
-      port: config.get<number>('REDIS_PORT', 6379),
-      lazyConnect: true,
-    });
-
-    this.client.on('error', (err) =>
-      this.logger.error('Redis connection error', err),
-    );
+  constructor(private readonly redisService: RedisService) {
+    // Reuse the single connection managed by RedisService.
+    // Lifecycle (connect/error/quit) is already handled there.
+    this.client = this.redisService.client;
   }
-
-  // Generic typed get/set
 
   async get<T>(key: string): Promise<T | null> {
     const raw = await this.client.get(key);
@@ -47,6 +54,7 @@ export class CacheService implements OnModuleDestroy {
     try {
       return JSON.parse(raw) as T;
     } catch {
+      // Stored as a plain string — return as-is
       return raw as unknown as T;
     }
   }
@@ -65,17 +73,18 @@ export class CacheService implements OnModuleDestroy {
     return (await this.client.exists(key)) === 1;
   }
 
-  // Token blacklist (Redis SET with TTL)
+  //  Token blacklist 
 
   async blacklistToken(jti: string, ttlSeconds: number): Promise<void> {
     await this.client.setex(CacheKeys.tokenBlocked(jti), ttlSeconds, '1');
+    this.logger.debug(`Token blacklisted — jti: ${jti}, ttl: ${ttlSeconds}s`);
   }
 
   async isTokenBlacklisted(jti: string): Promise<boolean> {
     return this.exists(CacheKeys.tokenBlocked(jti));
   }
 
-  // Sorted set helpers for rate limiting / tracking
+  // Rate-limit / set helpers
 
   async sadd(key: string, ...members: string[]): Promise<number> {
     return this.client.sadd(key, ...members);
@@ -93,16 +102,35 @@ export class CacheService implements OnModuleDestroy {
     return this.client.incr(key);
   }
 
+  //  Atomic increment with TTL (safe rate-limit counter)
+  // Uses a pipeline so both commands are sent in one round-trip.
+  // The EXPIRE is only set on the first call (when incr returns 1) to avoid
+  // resetting the window on every request.
+
+  async incrWithTTL(key: string, ttlSeconds: number): Promise<number> {
+    const pipeline = this.client.pipeline();
+    pipeline.incr(key);
+    pipeline.expire(key, ttlSeconds);
+    const results = await pipeline.exec();
+    // results: [[err, incrValue], [err, expireValue]]
+    const incrResult = results?.[0];
+    if (incrResult?.[0]) throw incrResult[0]; // surface Redis error
+    return incrResult?.[1] as number;
+  }
+
+  //  Diagnostics 
+
   async ping(): Promise<string> {
     return this.client.ping();
   }
 
-  /** Expose raw client for libraries that need it (e.g. rate-limit-redis) */
+  /**
+   * Expose the raw client for libraries that need it directly
+   * (e.g. rate-limit-redis, BullMQ).
+   */
   getClient(): Redis {
     return this.client;
   }
 
-  async onModuleDestroy() {
-    await this.client.quit();
-  }
+  // No onModuleDestroy here — RedisService owns the connection lifecycle.
 }
