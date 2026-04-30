@@ -23,6 +23,10 @@ export class RedisService implements OnModuleDestroy {
         return result !== null;
     }
 
+    async ping(): Promise<string> {
+        return this.client.ping();
+    }
+
     onModuleDestroy() {
         this.client.disconnect();
     }
