@@ -1,11 +1,17 @@
+
+
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector]
 }
+
+//  Existing models (unchanged)
 
 model User {
   id           String   @id @default(uuid())
@@ -37,8 +43,6 @@ model RefreshToken {
   @@index([userId])
   @@index([expiresAt])
 }
-
-// RBAC
 
 model Role {
   id          String   @id @default(uuid())
@@ -87,8 +91,6 @@ model RolePermission {
   @@id([roleId, permissionId])
 }
 
-// Documents
-
 model Document {
   id            String    @id @default(uuid())
   userId        String
@@ -105,14 +107,17 @@ model Document {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  chunks   Chunk[]
-  messages Message[]
+  user             User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chunks           Chunk[]
+  messages         Message[]
+  ingestionMetrics IngestionMetric[]
 
   @@index([userId])
   @@index([status])
   @@index([deletedAt])
 }
+
+//  Week 4: vector column added 
 
 model Chunk {
   id         String   @id @default(uuid())
@@ -120,6 +125,13 @@ model Chunk {
   index      Int
   content    String
   tokenCount Int
+  startChar  Int      @default(0)
+  endChar    Int      @default(0)
+
+  // pgvector: 1536 dimensions for text-embedding-3-small
+  // Prisma uses Unsupported until native vector type lands
+  embedding  Unsupported("vector(1536)")?
+
   createdAt  DateTime @default(now())
 
   document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
@@ -190,7 +202,7 @@ model AITrace {
   @@index([operation])
 }
 
-//  Webhooks
+//  Week 3: Webhooks
 
 model WebhookEvent {
   id          String    @id
@@ -201,4 +213,29 @@ model WebhookEvent {
   processedAt DateTime?
 
   @@index([provider, eventType])
+  @@index([receivedAt])
+}
+
+//  Week 4: Ingestion metrics
+
+model IngestionMetric {
+  id              String   @id @default(uuid())
+  documentId      String
+  userId          String
+  format          String   // 'text' | 'pdf' | 'markdown'
+  chunkCount      Int
+  totalTokens     Int
+  embeddingTokens Int      @default(0)
+  embeddingCostUsd Float   @default(0)
+  durationMs      Int
+  pageCount       Int?
+  cacheHits       Int      @default(0)
+  cacheMisses     Int      @default(0)
+  createdAt       DateTime @default(now())
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([documentId])
+  @@index([createdAt])
 }
