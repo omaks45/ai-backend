@@ -35,7 +35,7 @@ async function bootstrap() {
     .build();
   SwaggerModule.setup('api-docs', app, SwaggerModule.createDocument(app, config));
 
-  const port = process.env.PORT ?? 3000;
+  const port = process.env.PORT ?? 3001;
   await app.listen(port);
   console.log(`DocuChat running on http://localhost:${port}`);
   console.log(`Swagger docs at http://localhost:${port}/api-docs`);
