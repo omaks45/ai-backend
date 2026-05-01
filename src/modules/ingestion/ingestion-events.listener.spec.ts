@@ -29,7 +29,7 @@ describe('IngestionEventsListener', () => {
     jest.clearAllMocks();
   });
 
-  // ── document.ingested ──────────────────────────────────────────────────────
+  //  document.ingested 
 
   describe('onDocumentIngested', () => {
     const payload = {
@@ -75,7 +75,7 @@ describe('IngestionEventsListener', () => {
     });
   });
 
-  // ── ai.embedding.generated ────────────────────────────────────────────────
+  //  ai.embedding.generated 
 
   describe('onEmbeddingGenerated', () => {
     const payload = {
@@ -115,7 +115,7 @@ describe('IngestionEventsListener', () => {
     });
   });
 
-  // ── document.ingestion.failed ─────────────────────────────────────────────
+  //  document.ingestion.failed
 
   describe('onIngestionFailed', () => {
     it('logs the failure as a UsageLog row', async () => {
