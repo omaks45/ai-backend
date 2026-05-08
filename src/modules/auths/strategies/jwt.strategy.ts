@@ -2,8 +2,8 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
-import { RedisService } from '../../../redis/redis.service';
 import { PrismaService } from '../../../database/prisma.service';
+import { CacheService } from 'src/modules/cache/cache.service';
 
 export interface JwtPayload {
     sub: string;
@@ -17,7 +17,7 @@ export interface JwtPayload {
 export class JwtStrategy extends PassportStrategy(Strategy) {
     constructor(
         config: ConfigService,
-        private readonly redis: RedisService,
+        private readonly redis: CacheService, 
         private readonly prisma: PrismaService,
     ) {
         super({

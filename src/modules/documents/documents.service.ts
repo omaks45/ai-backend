@@ -5,6 +5,7 @@ import { RbacService } from '../rbac/rbac.service';
 import { CreateDocumentDto } from './dto/create-document.dto';
 import { ListDocumentsDto } from './dto/list-documents.dto';
 import { DocumentProcessorService } from '../jobs/document-processor.service';
+import * as crypto from 'crypto';
 
 // Active document filter — reused in every query
 const ACTIVE = { deletedAt: null };
@@ -30,9 +31,10 @@ export class DocumentsService {
       },
     });
 
-    const jobId = await this.processor.enqueue(doc.id, userId);
+    const correlationId = crypto.randomUUID(); 
+    const jobId = await this.processor.enqueue(doc.id, userId, correlationId);
 
-    this.events.emit('document.created', { userId, documentId: doc.id, title: doc.title });
+    this.events.emit('document.created', { userId, documentId: doc.id, title: doc.title, correlationId });
 
     return { ...doc, jobId };
   }

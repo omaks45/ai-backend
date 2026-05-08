@@ -9,10 +9,10 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
-import { RedisService } from '../../redis/redis.service';
 import { RbacService } from '../rbac/rbac.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { CacheService } from '../cache/cache.service';
 
 const SALT_ROUNDS = 12;
 const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -24,7 +24,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
-    private readonly redis: RedisService,
+    private readonly redis: CacheService,  
     private readonly events: EventEmitter2,
     private readonly rbac: RbacService,
   ) {}

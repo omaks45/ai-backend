@@ -1,4 +1,4 @@
-// src/modules/cache/cache.module.ts
+
 import { Global, Module } from '@nestjs/common';
 import { CacheService } from './cache.service';
 import { RedisModule } from 'src/redis/redis.module';
