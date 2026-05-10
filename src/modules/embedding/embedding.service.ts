@@ -1,144 +1,164 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { EventEmitter2 } from '@nestjs/event-emitter';
-import { createHash } from 'crypto';
-import { CacheService, CACHE_TTL, CacheKeys } from '../cache/cache.service';
+// Provider-agnostic embedding service.
+// Talks only to EmbeddingProvider — never to Ollama or OpenAI directly.
+//
+// CACHING STRATEGY (Redis):
+//   Cache key = SHA-256(providerName + ":" + text)
+//   Including the provider name is critical: Ollama returns 768-dim vectors,
+//   OpenAI returns 1536-dim. Without the provider in the key, a cache hit
+//   from dev (Ollama) could be returned in prod (OpenAI), silently breaking
+//   vector search with wrong-dimension data.
+//   TTL: 7 days — embeddings are deterministic for the same text + model.
+//
+// COST TRACKING:
+//   Every non-cached batch emits an 'ai.embedding.generated' event.
+//   Ollama cost is always $0. OpenAI cost is calculated from tokensUsed.
+//   Wire up a listener in the analytics/billing module to persist this.
 
-//  Constants
-
-const EMBEDDING_MODEL      = 'text-embedding-3-small';
-const EMBEDDING_DIMENSIONS = 1536;
-const OPENAI_BATCH_LIMIT   = 100; // Stay well under OpenAI's 2048 limit
-const COST_PER_MILLION_TOKENS = 0.02; // $ per 1M tokens (text-embedding-3-small)
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { EventEmitter2 }              from '@nestjs/event-emitter';
+import { createHash }                 from 'crypto';
+import { CacheService, CACHE_TTL }    from '../cache/cache.service';
+import {
+  EmbeddingProvider,
+  EMBEDDING_PROVIDER,
+} from './embedding-provider.interface';
 
 export interface EmbeddingResult {
-  embedding: number[];
-  fromCache: boolean;
+  embedding:  number[];
+  fromCache:  boolean;
   tokensUsed: number;
 }
 
 export interface BatchEmbeddingResult {
-  embeddings: number[][];
-  cacheHits: number;
-  cacheMisses: number;
-  tokensUsed: number;
+  embeddings:       number[][];
+  cacheHits:        number;
+  cacheMisses:      number;
+  tokensUsed:       number;
   estimatedCostUsd: number;
 }
+
+// Cost per 1M tokens — $0 for local providers
+const COST_PER_MILLION_TOKENS: Record<string, number> = {
+  openai: 0.02,
+  ollama: 0.00,
+};
 
 @Injectable()
 export class EmbeddingService {
   private readonly logger = new Logger(EmbeddingService.name);
-  private readonly apiKey: string;
-  private readonly apiBase: string;
 
   constructor(
-    private readonly cache: CacheService,
-    private readonly config: ConfigService,
-    private readonly events: EventEmitter2,
+    @Inject(EMBEDDING_PROVIDER)
+    private readonly provider: EmbeddingProvider,
+    private readonly cache:    CacheService,
+    private readonly events:   EventEmitter2,
   ) {
-    this.apiKey  = config.get<string>('OPENAI_API_KEY', '');
-    this.apiBase = config.get<string>('OPENAI_API_BASE', 'https://api.openai.com/v1');
+    // Log which provider is active so startup logs make it obvious
+    this.logger.log(
+      `EmbeddingService ready — provider=${provider.providerName}, dimensions=${provider.dimensions}`,
+    );
   }
+
+  /** Expose provider metadata so callers can react to dimensions/name */
+  get providerName(): string { return this.provider.providerName; }
+  get dimensions():   number { return this.provider.dimensions;   }
 
   // Single embedding (cached)
 
   async embedOne(text: string): Promise<EmbeddingResult> {
-    const hash     = this.hashText(text);
-    const cacheKey = CacheKeys.embedding(hash);
+    const key    = this.cacheKey(text);
+    const cached = await this.cache.get<number[]>(key);
 
-    const cached = await this.cache.get<number[]>(cacheKey);
     if (cached) {
-      this.logger.debug('Embedding cache hit', { hash: hash.slice(0, 12) });
+      this.logger.debug('Cache hit (single)', { provider: this.providerName });
       return { embedding: cached, fromCache: true, tokensUsed: 0 };
     }
 
-    const { embeddings, tokensUsed } = await this.callOpenAI([text]);
-    const embedding = embeddings[0];
+    const embedding = await this.provider.embed(text);
+    await this.cache.set(key, embedding, CACHE_TTL.EMBEDDING);
 
-    await this.cache.set(cacheKey, embedding, CACHE_TTL.EMBEDDING);
+    // Approximate token count for single embeds (provider doesn't return usage here)
+    const tokensUsed = Math.ceil(text.length / 4);
 
-    this.logger.debug('Embedding generated and cached', { hash: hash.slice(0, 12), tokensUsed });
+    this.logger.debug('Embedding generated (single)', {
+      provider: this.providerName,
+      tokensUsed,
+    });
 
     return { embedding, fromCache: false, tokensUsed };
   }
 
-  //  Batch embedding (cache-aware, cost-tracked)
+  //  Batch embeddings (cache-aware, cost-tracked)
 
   async embedBatch(
-    texts: string[],
+    texts:    string[],
     context?: { userId?: string; documentId?: string },
   ): Promise<BatchEmbeddingResult> {
     if (!texts.length) {
       return { embeddings: [], cacheHits: 0, cacheMisses: 0, tokensUsed: 0, estimatedCostUsd: 0 };
     }
 
-    // Pre-allocate result array to preserve order
-    const results: (number[] | null)[] = new Array(texts.length).fill(null);
-    const uncached: { originalIndex: number; text: string }[] = [];
+    // Pre-allocate result array to preserve original order
+    const results:  (number[] | null)[]              = new Array(texts.length).fill(null);
+    const uncached: { idx: number; text: string }[]  = [];
 
-    // ── 1. Cache check pass ────────────────────────────────────────────────
+    //  1. Cache check pass
     await Promise.all(
       texts.map(async (text, i) => {
-        const cacheKey = CacheKeys.embedding(this.hashText(text));
-        const hit      = await this.cache.get<number[]>(cacheKey);
-        if (hit) {
-          results[i] = hit;
-        } else {
-          uncached.push({ originalIndex: i, text });
-        }
+        const hit = await this.cache.get<number[]>(this.cacheKey(text));
+        if (hit) results[i] = hit;
+        else     uncached.push({ idx: i, text });
       }),
     );
 
     const cacheHits   = texts.length - uncached.length;
     const cacheMisses = uncached.length;
 
-    this.logger.debug('Batch embedding cache check', {
-      total: texts.length,
+    this.logger.log('Batch cache check', {
+      total:     texts.length,
       cacheHits,
       cacheMisses,
+      provider:  this.providerName,
     });
 
-    // ── 2. Generate only uncached embeddings ──────────────────────────────
+    //  2. Embed only uncached texts via provider ─────────────────────────
     let tokensUsed = 0;
 
     if (uncached.length > 0) {
-      const batches = this.partition(uncached, OPENAI_BATCH_LIMIT);
+      const { embeddings, tokensUsed: t } = await this.provider.embedBatch(
+        uncached.map((u) => u.text),
+      );
+      tokensUsed = t;
 
-      for (const batch of batches) {
-        const { embeddings, tokensUsed: batchTokens } = await this.callOpenAI(
-          batch.map((u) => u.text),
-        );
-        tokensUsed += batchTokens;
-
-        // Cache and slot results back into the ordered array
-        await Promise.all(
-          batch.map(async (item, batchIdx) => {
-            const embedding = embeddings[batchIdx];
-            results[item.originalIndex] = embedding;
-
-            const cacheKey = CacheKeys.embedding(this.hashText(item.text));
-            await this.cache.set(cacheKey, embedding, CACHE_TTL.EMBEDDING);
-          }),
-        );
-      }
+      // Slot back into ordered array and cache each result
+      await Promise.all(
+        uncached.map(async (item, batchIdx) => {
+          const embedding       = embeddings[batchIdx];
+          results[item.idx]     = embedding;
+          await this.cache.set(this.cacheKey(item.text), embedding, CACHE_TTL.EMBEDDING);
+        }),
+      );
     }
 
-    const estimatedCostUsd = (tokensUsed / 1_000_000) * COST_PER_MILLION_TOKENS;
+    const costRate       = COST_PER_MILLION_TOKENS[this.providerName] ?? 0;
+    const estimatedCostUsd = (tokensUsed / 1_000_000) * costRate;
 
-    // 3. Emit cost event 
-    if (tokensUsed > 0) {
+    //  3. Emit cost/usage event (only when we actually called the provider)
+    if (tokensUsed > 0 || cacheMisses > 0) {
       this.events.emit('ai.embedding.generated', {
         ...context,
-        model:            EMBEDDING_MODEL,
+        provider:         this.providerName,
+        dimensions:       this.dimensions,
         tokensUsed,
         estimatedCostUsd,
         cacheHits,
         cacheMisses,
+        totalTexts:       texts.length,
       });
     }
 
     return {
-      embeddings: results as number[][],
+      embeddings:       results as number[][],
       cacheHits,
       cacheMisses,
       tokensUsed,
@@ -146,67 +166,27 @@ export class EmbeddingService {
     };
   }
 
-  //  pgvector storage helpers
+  // pgvector helper
 
   /**
-   * Convert an embedding array to the pgvector literal format.
+   * Convert a float array to the pgvector literal string.
    * e.g. [0.1, -0.2, 0.3] → '[0.1,-0.2,0.3]'
+   * Use this when writing raw SQL / TypeORM query builder inserts.
    */
   toVectorLiteral(embedding: number[]): string {
     return `[${embedding.join(',')}]`;
   }
 
-  //  Private helpers 
-
-  private hashText(text: string): string {
-    return createHash('sha256').update(text).digest('hex');
-  }
-
-  private partition<T>(arr: T[], size: number): T[][] {
-    const batches: T[][] = [];
-    for (let i = 0; i < arr.length; i += size) {
-      batches.push(arr.slice(i, i + size));
-    }
-    return batches;
-  }
+  // Private
 
   /**
-   * Call the OpenAI embeddings endpoint.
-   * Uses fetch (Node 18+) — no Axios dependency required here.
+   * Cache key includes providerName so Ollama (768-dim) and OpenAI (1536-dim)
+   * vectors never collide in Redis when you switch environments.
    */
-  private async callOpenAI(
-    texts: string[],
-  ): Promise<{ embeddings: number[][]; tokensUsed: number }> {
-    if (!this.apiKey) {
-      throw new Error('OPENAI_API_KEY is not configured');
-    }
-
-    const response = await fetch(`${this.apiBase}/embeddings`, {
-      method:  'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'Authorization': `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({ model: EMBEDDING_MODEL, input: texts }),
-      signal: AbortSignal.timeout(30_000), // 30s hard timeout
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`OpenAI embeddings API error ${response.status}: ${body}`);
-    }
-
-    const data = (await response.json()) as {
-      data: { index: number; embedding: number[] }[];
-      usage: { total_tokens: number };
-    };
-
-    // Sort by index — OpenAI does not guarantee response order
-    const sorted = data.data.sort((a, b) => a.index - b.index);
-
-    return {
-      embeddings: sorted.map((d) => d.embedding),
-      tokensUsed: data.usage.total_tokens,
-    };
+  private cacheKey(text: string): string {
+    const hash = createHash('sha256')
+      .update(`${this.providerName}:${text}`)
+      .digest('hex');
+    return `embed:${hash}`;
   }
 }
