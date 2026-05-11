@@ -1,46 +1,13 @@
 
-//
-// WEEK 3 DAY 2 — RATE LIMITING
-//
-// WHY RATE LIMITING?
-// Without it a single user can fire unlimited requests, each potentially
-// triggering a database query, a Redis lookup, and an expensive OpenAI call.
-// Rate limiting is the bouncer: it decides how many requests a user can make
-// in a given window and politely turns them away when they exceed it.
-//
-// WHY SLIDING WINDOW OVER FIXED WINDOW?
-// Fixed window resets at clock boundaries. A user can fire N requests at
-// 12:00:59 and N more at 12:01:00 — 2N requests in 2 seconds. Sliding window
-// always looks at the last N seconds from NOW, so the effective rate is always
-// ≤ the configured limit. No boundary burst.
-//
-// WHY REDIS-BACKED AND NOT IN-MEMORY?
-// In-memory rate limiting is per-process. Running 3 Node.js instances means
-// users get 3× the allowed rate. Redis is a single shared store — limits are
-// enforced consistently across ALL instances.
-//
-// WHY TIER-BASED LIMITS?
-// A free user hammering the API should not get the same allowance as an
-// enterprise customer who pays thousands per month. The max() callback
-// receives the request and returns the correct limit for the user's tier.
-//
-// WHY STACK LIMITERS?
-// POST /documents goes through BOTH apiLimiter (general budget) AND
-// uploadLimiter (upload-specific budget). Users can exhaust their upload
-// budget while still having general API budget. Separate concerns = separate
-// counters.
-//
-// RATE LIMIT HEADERS (RFC 6585):
-// express-rate-limit automatically sends:
-//   RateLimit-Limit:     total allowed this window
-//   RateLimit-Remaining: how many left
-//   RateLimit-Reset:     Unix timestamp when window resets
-//   Retry-After:         seconds to wait (only on 429 responses)
+// express-rate-limit v7+ requires the ipKeyGenerator helper for any keyGenerator
+// that uses req.ip. Without it, IPv6 users can bypass limits because
+// "::ffff:1.2.3.4" and "1.2.3.4" are treated as different keys.
+// ipKeyGenerator normalises both forms to a consistent key.
 
-import rateLimit, { Options } from 'express-rate-limit';
-import { Request } from 'express';
+import rateLimit, { Options, ipKeyGenerator } from 'express-rate-limit';
+import { Request, Response } from 'express';
 
-//  Tier limit tables — one place to change limits for the whole app
+// Tier limit tables
 
 const API_LIMITS: Record<string, number> = {
     free:       100,
@@ -50,17 +17,17 @@ const API_LIMITS: Record<string, number> = {
 
 const UPLOAD_LIMITS: Record<string, number> = {
     free:         5,
-    pro:         50,
-    enterprise: 500,
+    pro:          50,
+    enterprise:  500,
 };
 
 const CHAT_LIMITS: Record<string, number> = {
-    free:       10,
-    pro:        30,
+    free:        10,
+    pro:         30,
     enterprise: 100,
 };
 
-// Factory: DRY helper — all limiters share the same defaults
+// Factory
 
 function buildLimiter(
     overrides: Partial<Options> & {
@@ -69,10 +36,9 @@ function buildLimiter(
     },
     ) {
     return rateLimit({
-        standardHeaders: true,   // RFC-compliant RateLimit-* headers
-        legacyHeaders:   false,  // Suppress deprecated X-RateLimit-* headers
+        standardHeaders: true,
+        legacyHeaders:   false,
 
-        // Consistent API error envelope — same shape as every other error
         message: {
         success:    false,
         statusCode: 429,
@@ -83,7 +49,7 @@ function buildLimiter(
         },
 
         // Default key: authenticated user ID — follows the user across IPs.
-        // Auth endpoints override this with IP (user not yet known).
+        // Auth endpoints override this with the ipKeyGenerator helper (see below).
         keyGenerator: (req: Request) =>
         (req as any).user?.id ?? req.ip ?? 'anonymous',
 
@@ -91,22 +57,22 @@ function buildLimiter(
     });
 }
 
-//  Auth limiter
+// Auth limiter
 // Routes:  POST /auth/register, /auth/login, /auth/refresh
-// Key:     IP address (user not yet authenticated)
-// Why 10?  10 attempts/15min → trying 1000 passwords takes 25 hours.
+// Key:     IP address — user not yet authenticated, no user.id available
+// Fix:     ipKeyGenerator normalises IPv4-mapped IPv6 addresses so
+//          "::ffff:1.2.3.4" and "1.2.3.4" resolve to the same bucket.
 
 export const authLimiter = buildLimiter({
-    windowMs: 15 * 60 * 1_000, // 15 minutes
+    windowMs: 15 * 60 * 1_000,
     max:      10,
     message:  'Too many auth attempts. Please try again in 15 minutes.',
-    keyGenerator: (req: Request) => req.ip ?? 'anonymous',
+    keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'anonymous'),
 });
 
-//  General API limiter
+// ── General API limiter
 // Routes:  All authenticated /api/v1/* endpoints
-// Key:     User ID
-// max():   Returns the correct limit for the user's tier dynamically.
+// Key:     User ID (set by JWT guard before this runs)
 
 export const apiLimiter = buildLimiter({
     windowMs: 15 * 60 * 1_000,
@@ -117,13 +83,12 @@ export const apiLimiter = buildLimiter({
     message: 'API rate limit exceeded. Upgrade your plan for higher limits.',
 });
 
-//Upload limiter
+// Upload limiter
 // Routes:  POST /documents
-// Stacks on top of apiLimiter.
-// 1-hour window because uploads trigger chunking + embedding (expensive).
+// 1-hour window — uploads trigger chunking + embedding (expensive).
 
 export const uploadLimiter = buildLimiter({
-    windowMs: 60 * 60 * 1_000, // 1 hour
+    windowMs: 60 * 60 * 1_000,
     max: (req: Request) => {
         const tier = (req as any).user?.tier ?? 'free';
         return UPLOAD_LIMITS[tier] ?? UPLOAD_LIMITS.free;
@@ -131,12 +96,12 @@ export const uploadLimiter = buildLimiter({
     message: 'Upload limit reached. You can upload more documents next hour.',
 });
 
-//  Chat / AI limiter
+//  Chat limiter
 // Routes:  POST /conversations/:id/messages
-// Tightest window (1 minute) — every message calls OpenAI.
+// 1-minute window — every message calls the LLM (most expensive operation).
 
 export const chatLimiter = buildLimiter({
-    windowMs: 60 * 1_000, // 1 minute
+    windowMs: 60 * 1_000,
     max: (req: Request) => {
         const tier = (req as any).user?.tier ?? 'free';
         return CHAT_LIMITS[tier] ?? CHAT_LIMITS.free;
