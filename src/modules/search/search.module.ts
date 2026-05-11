@@ -1,5 +1,3 @@
-// src/modules/search/search.module.ts
-//
 // SEARCH MODULE wires SearchService with its dependencies.
 // EmbeddingModule is imported so SearchService can embed the query
 // using whichever provider is active (Ollama or OpenAI).
