@@ -114,7 +114,7 @@ export class SearchService {
     return results;
   }
 
-  // ── Private query helpers ─────────────────────────────────────────────────
+  //Private query helpers
   // Split into two methods because Prisma tagged templates cannot conditionally
   // interpolate SQL fragments — each branch must be its own complete template.
 
@@ -173,7 +173,7 @@ export class SearchService {
   }
 }
 
-// ── Internal type ─────────────────────────────────────────────────────────────
+// Internal type
 interface RawRow {
   chunkId:       string;
   documentId:    string;
