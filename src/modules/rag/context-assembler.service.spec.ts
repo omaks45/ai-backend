@@ -31,39 +31,40 @@ describe('ContextAssemblerService', () => {
 
     describe('assemble()', () => {
         it('returns empty context for empty results', () => {
-        const ctx = service.assemble([]);
-        expect(ctx.chunks).toHaveLength(0);
-        expect(ctx.contextText).toBe('');
-        expect(ctx.totalTokens).toBe(0);
-        expect(ctx.citations).toHaveLength(0);
+            const ctx = service.assemble([]);
+            expect(ctx.chunks).toHaveLength(0);
+            expect(ctx.contextText).toBe('');
+            expect(ctx.totalTokens).toBe(0);
+            expect(ctx.citations).toHaveLength(0);
         });
 
         it('selects chunks within token budget', () => {
-        const chunks = [
-            makeChunk({ chunkId: 'c1', documentId: 'doc-1', chunkIndex: 0, tokenCount: 1000 }),
-            makeChunk({ chunkId: 'c2', documentId: 'doc-2', chunkIndex: 0, tokenCount: 1000 }),
-            makeChunk({ chunkId: 'c3', documentId: 'doc-3', chunkIndex: 0, tokenCount: 1000 }),
-            makeChunk({ chunkId: 'c4', documentId: 'doc-4', chunkIndex: 0, tokenCount: 1000 }), // exceeds 3500 budget
-        ];
-        const ctx = service.assemble(chunks);
-        expect(ctx.chunks).toHaveLength(3);
-        expect(ctx.totalTokens).toBe(3000);
+            const chunks = [
+                makeChunk({ chunkId: 'c1', documentId: 'doc-1', chunkIndex: 0,  tokenCount: 1000 }),
+                makeChunk({ chunkId: 'c2', documentId: 'doc-2', chunkIndex: 10, tokenCount: 1000 }),
+                makeChunk({ chunkId: 'c3', documentId: 'doc-3', chunkIndex: 20, tokenCount: 1000 }),
+                makeChunk({ chunkId: 'c4', documentId: 'doc-4', chunkIndex: 30, tokenCount: 1000 }),
+            ];
+            const ctx = service.assemble(chunks);
+            expect(ctx.chunks).toHaveLength(3);
+            expect(ctx.totalTokens).toBe(3000);
         });
 
         it('stops exactly at the token budget boundary', () => {
-        const chunks = [
-            makeChunk({ chunkId: 'c1', documentId: 'doc-1', chunkIndex: 0, tokenCount: 3400 }),
-            makeChunk({ chunkId: 'c2', documentId: 'doc-2', chunkIndex: 0, tokenCount: 200 }), // 3400+200=3600 > 3500 → skipped
-        ];
-        const ctx = service.assemble(chunks);
-        expect(ctx.chunks).toHaveLength(1);
+            const chunks = [
+                makeChunk({ chunkId: 'c1', documentId: 'doc-1', chunkIndex: 0,  tokenCount: 3400 }),
+                makeChunk({ chunkId: 'c2', documentId: 'doc-2', chunkIndex: 10, tokenCount: 200 }),
+            ];
+            const ctx = service.assemble(chunks);
+            expect(ctx.chunks).toHaveLength(1);
+            expect(ctx.totalTokens).toBe(3400);
         });
 
         it('generates 1-based citations matching chunk order', () => {
-        const chunks = [
-            makeChunk({ chunkId: 'c1' }),
-            makeChunk({ chunkId: 'c2', chunkIndex: 5, documentId: 'doc-2' }),
-        ];
+            const chunks = [
+                makeChunk({ chunkId: 'c1' }),
+                makeChunk({ chunkId: 'c2', chunkIndex: 5, documentId: 'doc-2' }),
+            ];
         const ctx = service.assemble(chunks);
         expect(ctx.citations[0].index).toBe(1);
         expect(ctx.citations[1].index).toBe(2);
@@ -85,7 +86,6 @@ describe('ContextAssemblerService', () => {
         });
     });
 
-    // ── deduplication ─────────────────────────────────────────────────────────
 
     describe('adjacent chunk deduplication', () => {
         it('skips chunks adjacent to an already-selected chunk from same document', () => {
