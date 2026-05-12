@@ -1,4 +1,3 @@
-
 import { Test, TestingModule } from '@nestjs/testing';
 import { ContextAssemblerService } from './context-assembler.service';
 import { SearchResult }            from '../search/search.service';
@@ -41,10 +40,10 @@ describe('ContextAssemblerService', () => {
 
         it('selects chunks within token budget', () => {
         const chunks = [
-            makeChunk({ chunkId: 'c1', tokenCount: 1000 }),
-            makeChunk({ chunkId: 'c2', tokenCount: 1000 }),
-            makeChunk({ chunkId: 'c3', tokenCount: 1000 }),
-            makeChunk({ chunkId: 'c4', tokenCount: 1000 }), // exceeds 3500 budget
+            makeChunk({ chunkId: 'c1', documentId: 'doc-1', chunkIndex: 0, tokenCount: 1000 }),
+            makeChunk({ chunkId: 'c2', documentId: 'doc-2', chunkIndex: 0, tokenCount: 1000 }),
+            makeChunk({ chunkId: 'c3', documentId: 'doc-3', chunkIndex: 0, tokenCount: 1000 }),
+            makeChunk({ chunkId: 'c4', documentId: 'doc-4', chunkIndex: 0, tokenCount: 1000 }), // exceeds 3500 budget
         ];
         const ctx = service.assemble(chunks);
         expect(ctx.chunks).toHaveLength(3);
@@ -53,8 +52,8 @@ describe('ContextAssemblerService', () => {
 
         it('stops exactly at the token budget boundary', () => {
         const chunks = [
-            makeChunk({ chunkId: 'c1', tokenCount: 3400 }),
-            makeChunk({ chunkId: 'c2', tokenCount: 200 }), // 3400+200=3600 > 3500 → skipped
+            makeChunk({ chunkId: 'c1', documentId: 'doc-1', chunkIndex: 0, tokenCount: 3400 }),
+            makeChunk({ chunkId: 'c2', documentId: 'doc-2', chunkIndex: 0, tokenCount: 200 }), // 3400+200=3600 > 3500 → skipped
         ];
         const ctx = service.assemble(chunks);
         expect(ctx.chunks).toHaveLength(1);

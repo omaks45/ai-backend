@@ -5,6 +5,7 @@
 import { Module }         from '@nestjs/common';
 import { SearchService }  from './search.service';
 import { EmbeddingModule } from '../embedding/embedding.module';
+import { PrismaService } from 'src/database/prisma.service';
 
 @Module({
   imports:   [EmbeddingModule],
