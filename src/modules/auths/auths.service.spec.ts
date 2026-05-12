@@ -8,6 +8,7 @@ import { AuthService } from './auths.service';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { RbacService } from '../rbac/rbac.service';
+import { CacheService } from '../cache/cache.service';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
@@ -38,6 +39,12 @@ const mockRedis = {
   isTokenBlacklisted: jest.fn().mockResolvedValue(false),
 };
 
+const mockCache = {
+  blacklistToken:      jest.fn().mockResolvedValue(undefined),
+  isTokenBlacklisted:  jest.fn().mockResolvedValue(false),
+};
+
+
 const mockEvents = { emit: jest.fn() };
 
 // Added in Week 2 — must be present or NestJS DI fails
@@ -45,7 +52,7 @@ const mockRbac = {
   assignDefaultRole: jest.fn().mockResolvedValue(undefined),
 };
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// Tests
 
 describe('AuthService', () => {
   let service: AuthService;
@@ -59,7 +66,8 @@ describe('AuthService', () => {
         { provide: ConfigService,  useValue: mockConfig  },
         { provide: RedisService,   useValue: mockRedis   },
         { provide: EventEmitter2,  useValue: mockEvents  },
-        { provide: RbacService,    useValue: mockRbac    }, // ← was missing
+        { provide: RbacService,    useValue: mockRbac    },
+        { provide: CacheService, useValue: mockCache },
       ],
     }).compile();
 
@@ -67,7 +75,7 @@ describe('AuthService', () => {
     jest.clearAllMocks();
   });
 
-  // ── register ────────────────────────────────────────────────────────────────
+  // register
 
   describe('register', () => {
     it('creates a user and returns safe fields only', async () => {
@@ -140,7 +148,7 @@ describe('AuthService', () => {
     });
   });
 
-  // ── login ────────────────────────────────────────────────────────────────────
+  // login
 
   describe('login', () => {
     const makeUserWithHash = async (password = 'CorrectPass1') => ({
