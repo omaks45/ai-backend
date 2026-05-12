@@ -53,7 +53,7 @@ describe('AbuseDetectionMiddleware', () => {
     });
 
     it('sets TTL only on first new member', async () => {
-        mockCache.sadd.mockResolvedValue(1);
+        mockCache.sadd.mockResolvedValue(1); 
         mockCache.scard.mockResolvedValue(1);
         await middleware.use(makeReq('/documents/uuid-1', 'user-1'), mockRes, mockNext);
         expect(mockCache.expire).toHaveBeenCalledWith('abuse:docs:user-1', 300);
@@ -67,12 +67,12 @@ describe('AbuseDetectionMiddleware', () => {
     });
 
     it('emits scraping event at threshold of 50', async () => {
-        mockCache.sadd.mockResolvedValue(1);
+        mockCache.sadd.mockResolvedValue(1);   // ← must be exactly 1
         mockCache.scard.mockResolvedValue(50);
         await middleware.use(makeReq('/documents/uuid-50', 'user-1'), mockRes, mockNext);
         expect(mockEvents.emit).toHaveBeenCalledWith(
-        'security.scraping.detected',
-        expect.objectContaining({ userId: 'user-1' }),
+            'security.scraping.detected',
+            expect.objectContaining({ userId: 'user-1' }),
         );
     });
 
