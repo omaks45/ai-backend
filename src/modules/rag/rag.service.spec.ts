@@ -20,27 +20,39 @@ function makeContext(overrides: Partial<AssembledContext> = {}): AssembledContex
   };
 }
 
-// Shared mock fetch response — same OpenAI-compatible shape for both providers
-// (RagService normalises Ollama responses to this shape internally)
-const mockApiResponse = {
+// Provider-specific raw mock responses.
+//
+// Ollama:  callChatAPI reads data.message.content, data.prompt_eval_count,
+//          data.eval_count — then normalises to OpenAI shape internally.
+//
+// OpenAI:  response.json() already returns the OpenAI shape — the service
+//          uses it directly without any normalisation step.
+const mockOllamaApiResponse = {
+  message:           { content: 'The answer is 42.' },
+  prompt_eval_count: 100,
+  eval_count:        50,
+};
+
+const mockOpenAIApiResponse = {
   choices: [{ message: { content: 'The answer is 42.' } }],
-  usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+  usage:   { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
 };
 
 const mockFetch = jest.fn();
 global.fetch = mockFetch as any;
 
 const mockEvents = { emit: jest.fn() };
-// Suite 
+
+// Suite
 
 describe('RagService', () => {
   let service: RagService;
 
   // Run all tests for both provider configurations
   describe.each([
-    { provider: 'ollama', apiKey: '' },
-    { provider: 'openai', apiKey: 'sk-test' },
-  ])('provider=$provider', ({ provider, apiKey }) => {
+    { provider: 'ollama', apiKey: '',        mockResponse: mockOllamaApiResponse },
+    { provider: 'openai', apiKey: 'sk-test', mockResponse: mockOpenAIApiResponse },
+  ])('provider=$provider', ({ provider, apiKey, mockResponse }) => {
     beforeEach(async () => {
       // Set env vars before the module loads so ragConfig() picks them up
       process.env.EMBEDDING_PROVIDER = provider;
@@ -58,7 +70,8 @@ describe('RagService', () => {
 
       service = module.get<RagService>(RagService);
       jest.clearAllMocks();
-      mockFetch.mockResolvedValue({ ok: true, json: async () => mockApiResponse });
+      // Each provider gets its own correctly-shaped mock response
+      mockFetch.mockResolvedValue({ ok: true, json: async () => mockResponse });
     });
 
     afterAll(() => delete process.env.EMBEDDING_PROVIDER);
@@ -98,10 +111,10 @@ describe('RagService', () => {
       expect(mockEvents.emit).toHaveBeenCalledWith(
         'ai.chat.completed',
         expect.objectContaining({
-          provider:         provider,
-          userId:           'u1',
-          conversationId:   'conv1',
-          costUsd:          expect.any(Number),
+          provider:       provider,
+          userId:         'u1',
+          conversationId: 'conv1',
+          costUsd:        expect.any(Number),
         }),
       );
     });
