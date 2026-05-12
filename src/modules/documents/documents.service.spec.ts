@@ -39,6 +39,7 @@ describe('DocumentsService', () => {
   });
 
   describe('create', () => {
+
     it('creates document and enqueues job', async () => {
       const doc = { id: 'doc-1', title: 'Test', userId: 'user-1', status: 'pending' };
       mockPrisma.document.create.mockResolvedValue(doc);
@@ -46,7 +47,8 @@ describe('DocumentsService', () => {
       const result = await service.create({ title: 'Test', content: 'hello' }, 'user-1');
 
       expect(mockPrisma.document.create).toHaveBeenCalled();
-      expect(mockProcessor.enqueue).toHaveBeenCalledWith('doc-1', 'user-1');
+      // ← Use expect.any(String) for the correlationId — it's auto-generated
+      expect(mockProcessor.enqueue).toHaveBeenCalledWith('doc-1', 'user-1', expect.any(String));
       expect(mockEvents.emit).toHaveBeenCalledWith('document.created', expect.any(Object));
       expect(result.jobId).toBe('job-1');
     });
