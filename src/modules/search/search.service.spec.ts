@@ -69,9 +69,6 @@ describe('SearchService', () => {
 
     const module = await buildModule();
     service = module.get<SearchService>(SearchService);
-
-    // Silence logger during tests
-    jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
   });
 
   // -------------------------------------------------------------------------
@@ -352,8 +349,15 @@ describe('SearchService', () => {
   // -------------------------------------------------------------------------
 
   describe('logging', () => {
+    let logSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      // Spy on the service's logger instance directly rather than Logger.prototype,
+      // so we intercept the exact object the service holds and calls at runtime.
+      logSpy = jest.spyOn((service as any).logger, 'log').mockImplementation(() => {});
+    });
+
     it('logs once per search call', async () => {
-      const logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
       mockPrismaService.$queryRaw.mockResolvedValue([makeRawRow()]);
 
       await service.search({ query: 'q', userId: 'u' });
@@ -362,7 +366,6 @@ describe('SearchService', () => {
     });
 
     it('includes correlationId in the log when provided', async () => {
-      const logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
       mockPrismaService.$queryRaw.mockResolvedValue([]);
 
       await service.search({ query: 'q', userId: 'u', correlationId: 'corr-123' });
@@ -372,7 +375,6 @@ describe('SearchService', () => {
     });
 
     it('logs provider name from EmbeddingService', async () => {
-      const logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
       mockPrismaService.$queryRaw.mockResolvedValue([]);
 
       await service.search({ query: 'q', userId: 'u' });
@@ -382,7 +384,6 @@ describe('SearchService', () => {
     });
 
     it('logs topScore as "n/a" when result set is empty after filtering', async () => {
-      const logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
       mockPrismaService.$queryRaw.mockResolvedValue([]);
 
       await service.search({ query: 'q', userId: 'u' });
@@ -392,7 +393,6 @@ describe('SearchService', () => {
     });
 
     it('logs topScore as a formatted number when results exist', async () => {
-      const logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
       mockPrismaService.$queryRaw.mockResolvedValue([makeRawRow({ score: '0.9321' })]);
 
       await service.search({ query: 'q', userId: 'u', minScore: 0 });
