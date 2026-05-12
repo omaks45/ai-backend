@@ -1,4 +1,3 @@
-
 import { Test, TestingModule } from '@nestjs/testing';
 import { ChunkerService } from './chunker.service';
 
@@ -43,7 +42,7 @@ describe('ChunkerService', () => {
         });
 
         it('returns single chunk for short text', () => {
-        const result = service.chunk('Short text.', { maxTokens: 500 });
+        const result = service.chunk('Short text.', { maxTokens: 500, minTokens: 1 });
         expect(result).toHaveLength(1);
         expect(result[0].index).toBe(0);
         expect(result[0].text).toBe('Short text.');
@@ -119,7 +118,10 @@ describe('ChunkerService', () => {
 
     describe('chunk — metadata', () => {
         it('each chunk has tokenEstimate, startChar, endChar', () => {
-        const result = service.chunk('Hello world. Second sentence.', { maxTokens: 500 });
+        const result = service.chunk(
+            'Hello world. Second sentence here for testing.',
+            { maxTokens: 500, minTokens: 1 },
+        );
         expect(result[0]).toMatchObject({
             index:         0,
             tokenEstimate: expect.any(Number),
