@@ -56,6 +56,11 @@ if (!fs.existsSync(source)) {
 //  Copy schema
 fs.copyFileSync(source, target);
 
+if (provider === 'ollama' && process.env.DATABASE_URL?.includes('prod')) {
+    console.error('  WARNING: Using ollama schema against a prod DATABASE_URL!');
+    process.exit(1);
+}
+
 // Read back dimension from the copied file for confirmation
 const content    = fs.readFileSync(target, 'utf8');
 const dimMatch   = content.match(/vector\((\d+)\)/);

@@ -1,4 +1,3 @@
-
 // CONCEPT: SEMANTIC SEARCH WITH pgvector
 //
 // HOW IT WORKS:
@@ -29,11 +28,18 @@
 // Prisma does not yet support the vector type natively. The <=> operator
 // and ::vector cast require raw SQL until Prisma adds native vector support.
 //
+// FIX: Prisma tagged template literals parameterize ALL interpolated values,
+// including numeric dimensions. PostgreSQL rejects parameterized type modifiers
+// (e.g. ::vector($1)). We use Prisma.raw() to inline the dimension as a SQL
+// literal instead of a bind parameter. This is safe because dims comes from
+// EmbeddingService (768 or 1536), never from user input.
+//
 // SECURITY: User ownership is enforced at the DB layer, not application layer.
 // Even if application code has a bug, the WHERE d."userId" = ${userId} clause
 // ensures no cross-user data leakage.
 
 import { Injectable, Logger } from '@nestjs/common';
+import { Prisma }             from '@prisma/client';
 import { PrismaService }      from '../../database/prisma.service';
 import { EmbeddingService }   from '../embedding/embedding.service';
 import { RAG_CONFIG }         from '../../config/rag-prompts.config';
@@ -83,16 +89,18 @@ export class SearchService {
     const { embedding } = await this.embedding.embedOne(query);
     const vectorLiteral  = this.embedding.toVectorLiteral(embedding);
 
-    // Step 2: Build the vector cast using the active provider's dimensions.
-    // This ensures ::vector(768) for Ollama and ::vector(1536) for OpenAI.
-    // Mismatching dimensions would cause a pgvector runtime error.
-    const dims = this.embedding.dimensions;
+    // Step 2: Build the vector dimension as a Prisma.raw() literal.
+    // Prisma tagged templates parameterize every interpolation — including numbers —
+    // which produces ::vector($1) in the SQL. PostgreSQL rejects parameterized type
+    // modifiers, so we use Prisma.raw() to inline the value directly as SQL text.
+    // Safe because dims is always 768 (Ollama) or 1536 (OpenAI), never user input.
+    const dim = Prisma.raw(String(this.embedding.dimensions));
 
     // Step 3: pgvector similarity search
     // documentId filter is applied inline to keep the query a single tagged template.
     const rows = documentId
-      ? await this.searchWithDocument(vectorLiteral, dims, userId, documentId, topK)
-      : await this.searchAllDocuments(vectorLiteral, dims, userId, topK);
+      ? await this.searchWithDocument(vectorLiteral, dim, userId, documentId, topK)
+      : await this.searchAllDocuments(vectorLiteral, dim, userId, topK);
 
     // Step 4: Filter by minimum relevance score
     const results = rows
@@ -103,7 +111,7 @@ export class SearchService {
       correlationId,
       userId,
       provider:        this.embedding.providerName,
-      dimensions:      dims,
+      dimensions:      this.embedding.dimensions,
       queryPreview:    query.slice(0, 80),
       totalRetrieved:  rows.length,
       afterFilter:     results.length,
@@ -114,13 +122,13 @@ export class SearchService {
     return results;
   }
 
-  //Private query helpers
+  // Private query helpers
   // Split into two methods because Prisma tagged templates cannot conditionally
   // interpolate SQL fragments — each branch must be its own complete template.
 
   private searchAllDocuments(
     vectorLiteral: string,
-    dims:          number,
+    dim:           Prisma.Sql,
     userId:        string,
     topK:          number,
   ) {
@@ -132,21 +140,21 @@ export class SearchService {
         c.content,
         c.index           AS "chunkIndex",
         c."tokenCount",
-        1 - (c.embedding <=> ${vectorLiteral}::vector(${dims})) AS score
+        1 - (c.embedding <=> ${vectorLiteral}::vector(${dim})) AS score
       FROM "Chunk" c
       JOIN "Document" d ON d.id = c."documentId"
       WHERE d."userId"    = ${userId}
         AND d."deletedAt" IS NULL
         AND d.status      = 'ready'
         AND c.embedding   IS NOT NULL
-      ORDER BY c.embedding <=> ${vectorLiteral}::vector(${dims})
+      ORDER BY c.embedding <=> ${vectorLiteral}::vector(${dim})
       LIMIT ${topK}
     `;
   }
 
   private searchWithDocument(
     vectorLiteral: string,
-    dims:          number,
+    dim:           Prisma.Sql,
     userId:        string,
     documentId:    string,
     topK:          number,
@@ -159,7 +167,7 @@ export class SearchService {
         c.content,
         c.index           AS "chunkIndex",
         c."tokenCount",
-        1 - (c.embedding <=> ${vectorLiteral}::vector(${dims})) AS score
+        1 - (c.embedding <=> ${vectorLiteral}::vector(${dim})) AS score
       FROM "Chunk" c
       JOIN "Document" d ON d.id = c."documentId"
       WHERE d."userId"    = ${userId}
@@ -167,7 +175,7 @@ export class SearchService {
         AND d."deletedAt" IS NULL
         AND d.status      = 'ready'
         AND c.embedding   IS NOT NULL
-      ORDER BY c.embedding <=> ${vectorLiteral}::vector(${dims})
+      ORDER BY c.embedding <=> ${vectorLiteral}::vector(${dim})
       LIMIT ${topK}
     `;
   }

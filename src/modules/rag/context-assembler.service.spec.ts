@@ -2,6 +2,18 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ContextAssemblerService } from './context-assembler.service';
 import { SearchResult }            from '../search/search.service';
 
+// Force the OpenAI provider so contextTokenBudget is always 3_500,
+// regardless of the local NODE_ENV / EMBEDDING_PROVIDER env vars.
+// Without this, the test runner defaults to OLLAMA_CONFIG (budget 2_500)
+// and chunks that total 3_000 or 3_400 tokens are rejected by the assembler.
+beforeAll(() => {
+    process.env.EMBEDDING_PROVIDER = 'openai';
+});
+
+afterAll(() => {
+    delete process.env.EMBEDDING_PROVIDER;
+});
+
 function makeChunk(overrides: Partial<SearchResult> = {}): SearchResult {
     return {
         chunkId:       'chunk-1',
@@ -20,7 +32,7 @@ describe('ContextAssemblerService', () => {
 
     beforeEach(async () => {
         const module: TestingModule = await Test.createTestingModule({
-        providers: [ContextAssemblerService],
+            providers: [ContextAssemblerService],
         }).compile();
         service = module.get<ContextAssemblerService>(ContextAssemblerService);
     });
@@ -39,6 +51,8 @@ describe('ContextAssemblerService', () => {
         });
 
         it('selects chunks within token budget', () => {
+            // 4 chunks × 1_000 tokens each = 4_000 total.
+            // Budget is 3_500, so only the first 3 (3_000 tokens) fit.
             const chunks = [
                 makeChunk({ chunkId: 'c1', documentId: 'doc-1', chunkIndex: 0,  tokenCount: 1000 }),
                 makeChunk({ chunkId: 'c2', documentId: 'doc-2', chunkIndex: 10, tokenCount: 1000 }),
@@ -51,6 +65,8 @@ describe('ContextAssemblerService', () => {
         });
 
         it('stops exactly at the token budget boundary', () => {
+            // c1 (3_400 tokens) fits within the 3_500 budget; c2 (200 tokens)
+            // would push the total to 3_600 and is skipped.
             const chunks = [
                 makeChunk({ chunkId: 'c1', documentId: 'doc-1', chunkIndex: 0,  tokenCount: 3400 }),
                 makeChunk({ chunkId: 'c2', documentId: 'doc-2', chunkIndex: 10, tokenCount: 200 }),
@@ -65,72 +81,72 @@ describe('ContextAssemblerService', () => {
                 makeChunk({ chunkId: 'c1' }),
                 makeChunk({ chunkId: 'c2', chunkIndex: 5, documentId: 'doc-2' }),
             ];
-        const ctx = service.assemble(chunks);
-        expect(ctx.citations[0].index).toBe(1);
-        expect(ctx.citations[1].index).toBe(2);
+            const ctx = service.assemble(chunks);
+            expect(ctx.citations[0].index).toBe(1);
+            expect(ctx.citations[1].index).toBe(2);
         });
 
         it('context text contains Source labels', () => {
-        const ctx = service.assemble([makeChunk()]);
-        expect(ctx.contextText).toContain('[Source 1:');
-        expect(ctx.contextText).toContain('Test Doc');
+            const ctx = service.assemble([makeChunk()]);
+            expect(ctx.contextText).toContain('[Source 1:');
+            expect(ctx.contextText).toContain('Test Doc');
         });
 
         it('separates multiple chunks with ---', () => {
-        const chunks = [
-            makeChunk({ chunkId: 'c1' }),
-            makeChunk({ chunkId: 'c2', chunkIndex: 5, documentId: 'doc-2' }),
-        ];
-        const ctx = service.assemble(chunks);
-        expect(ctx.contextText).toContain('---');
+            const chunks = [
+                makeChunk({ chunkId: 'c1' }),
+                makeChunk({ chunkId: 'c2', chunkIndex: 5, documentId: 'doc-2' }),
+            ];
+            const ctx = service.assemble(chunks);
+            expect(ctx.contextText).toContain('---');
         });
     });
 
 
     describe('adjacent chunk deduplication', () => {
         it('skips chunks adjacent to an already-selected chunk from same document', () => {
-        const chunks = [
-            makeChunk({ chunkId: 'c1', documentId: 'doc-1', chunkIndex: 3 }),
-            makeChunk({ chunkId: 'c2', documentId: 'doc-1', chunkIndex: 4 }), // adjacent → skip
-            makeChunk({ chunkId: 'c3', documentId: 'doc-1', chunkIndex: 2 }), // adjacent → skip
-        ];
-        const ctx = service.assemble(chunks);
-        expect(ctx.chunks).toHaveLength(1);
-        expect(ctx.chunks[0].chunkId).toBe('c1');
+            const chunks = [
+                makeChunk({ chunkId: 'c1', documentId: 'doc-1', chunkIndex: 3 }),
+                makeChunk({ chunkId: 'c2', documentId: 'doc-1', chunkIndex: 4 }),
+                makeChunk({ chunkId: 'c3', documentId: 'doc-1', chunkIndex: 2 }),
+            ];
+            const ctx = service.assemble(chunks);
+            expect(ctx.chunks).toHaveLength(1);
+            expect(ctx.chunks[0].chunkId).toBe('c1');
         });
 
         it('does NOT deduplicate chunks from different documents', () => {
-        const chunks = [
-            makeChunk({ chunkId: 'c1', documentId: 'doc-1', chunkIndex: 3 }),
-            makeChunk({ chunkId: 'c2', documentId: 'doc-2', chunkIndex: 4 }), // different doc → keep
-        ];
-        const ctx = service.assemble(chunks);
-        expect(ctx.chunks).toHaveLength(2);
+            const chunks = [
+                makeChunk({ chunkId: 'c1', documentId: 'doc-1', chunkIndex: 3 }),
+                makeChunk({ chunkId: 'c2', documentId: 'doc-2', chunkIndex: 4 }), // different doc → keep
+            ];
+            const ctx = service.assemble(chunks);
+            expect(ctx.chunks).toHaveLength(2);
         });
 
         it('keeps non-adjacent chunks from the same document', () => {
-        const chunks = [
-            makeChunk({ chunkId: 'c1', documentId: 'doc-1', chunkIndex: 0 }),
-            makeChunk({ chunkId: 'c2', documentId: 'doc-1', chunkIndex: 5 }), // gap > 1 → keep
-        ];
-        const ctx = service.assemble(chunks);
-        expect(ctx.chunks).toHaveLength(2);
+            const chunks = [
+                makeChunk({ chunkId: 'c1', documentId: 'doc-1', chunkIndex: 0 }),
+                makeChunk({ chunkId: 'c2', documentId: 'doc-1', chunkIndex: 5 }), // gap > 1 → keep
+            ];
+            const ctx = service.assemble(chunks);
+            expect(ctx.chunks).toHaveLength(2);
         });
     });
 
-    //  citation shape
+    // citation shape
 
     describe('citation shape', () => {
         it('citation contains all required fields', () => {
-        const ctx = service.assemble([makeChunk()]);
-        expect(ctx.citations[0]).toMatchObject({
-            index:         1,
-            chunkId:       expect.any(String),
-            documentId:    expect.any(String),
-            documentTitle: expect.any(String),
-            chunkIndex:    expect.any(Number),
-            score:         expect.any(Number),
-        });
+            const ctx = service.assemble([makeChunk()]);
+            expect(ctx.citations[0]).toMatchObject({
+                index:         1,
+                chunkId:       expect.any(String),
+                documentId:    expect.any(String),
+                documentTitle: expect.any(String),
+                chunkIndex:    expect.any(Number),
+                score:         expect.any(Number),
+            });
         });
     });
 });

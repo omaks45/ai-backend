@@ -50,8 +50,9 @@ function buildLimiter(
 
         // Default key: authenticated user ID — follows the user across IPs.
         // Auth endpoints override this with the ipKeyGenerator helper (see below).
+        // In buildLimiter — replace the default keyGenerator
         keyGenerator: (req: Request) =>
-        (req as any).user?.id ?? req.ip ?? 'anonymous',
+            (req as any).user?.id ?? ipKeyGenerator(req.ip ?? 'anonymous'),
 
         ...overrides,
     });

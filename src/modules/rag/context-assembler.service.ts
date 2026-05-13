@@ -49,11 +49,17 @@ export class ContextAssemblerService {
     let totalTokens = 0;
 
     for (const result of results) {
-      // Skip if adding this chunk would exceed the token budget
-      if (totalTokens + result.tokenCount > RAG_CONFIG.contextTokenBudget) break;
-
       // Skip adjacent chunks from the same document (overlap deduplication)
+      // Check this BEFORE the budget check so redundant chunks don't block
+      // smaller non-redundant chunks that come later in the list.
       if (this.isRedundant(result, selected)) continue;
+
+      // Skip chunks that would exceed the token budget, but keep looking —
+      // a later chunk might be smaller and still fit within the budget.
+      // Using `continue` (not `break`) is intentional: the results list is
+      // ordered by score, not by token count, so a large chunk early in the
+      // list must not terminate the loop for all subsequent smaller chunks.
+      if (totalTokens + result.tokenCount > RAG_CONFIG.contextTokenBudget) continue;
 
       selected.push(result);
       totalTokens += result.tokenCount;

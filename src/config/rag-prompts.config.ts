@@ -61,7 +61,7 @@ const OPENAI_CONFIG: ProviderConfig = {
 
 const OLLAMA_CONFIG: ProviderConfig = {
     provider:             'ollama',
-    model:                'llama3.2',   // Change to any model you have pulled locally
+    model: process.env.OLLAMA_CHAT_MODEL ?? 'llama3.2',
     apiBase:              'http://localhost:11434',
     temperature:          0.1,
     maxTokens:            1_500,

@@ -56,10 +56,12 @@ import { DocumentEventsListener } from './modules/events/document.events';
 import { SanitizeMiddleware } from './common/middleware/sanitize.middleware';
 import { RequestLoggerMiddleware } from './common/middleware/request-logger.middleware';
 import { AbuseDetectionMiddleware } from './common/middleware/abuse-detection.middleware';
-import { MetricsService } from './common/middleware/metrics.middleware';
 import { HealthModule } from './modules/health/health.module';
 import { SecurityModule } from './modules/security/security.module';
 import { LoggerModule } from './modules/logger/logger.module';
+import { MetricsModule } from './modules/metrics/metrics.module';
+import { DatabaseModule } from './database/database.module';
+import { MetricsMiddleware } from './common/middleware/metrics.middleware';
 
 @Module({
   imports: [
@@ -73,12 +75,14 @@ import { LoggerModule } from './modules/logger/logger.module';
     // Base throttle guard (overridden per-route by specific limiters in main.ts)
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
 
+    DatabaseModule, // @Global() — PrismaService injectable everywhere without re-importing
+
     // CacheModule is @Global() — Redis cache injectable everywhere without re-importing
     CacheModule,
     LoggerModule,  // @Global() — Winston logger everywhere
 
     // Observability
-    MetricsService, // Prometheus metrics for HTTP requests, queue jobs, embedding ops
+    MetricsModule, // Prometheus metrics for HTTP requests, queue jobs, embedding ops
     HealthModule,
     SecurityModule,
 
@@ -122,7 +126,7 @@ export class AppModule implements NestModule {
       .apply(
         SanitizeMiddleware,       // strip XSS from body/query/params
         RequestLoggerMiddleware,  // correlationId + structured logging
-        MetricsService,        // Prometheus HTTP metrics
+        MetricsMiddleware,              // Prometheus HTTP metrics
         AbuseDetectionMiddleware, // scraping pattern detection
       )
       .forRoutes({ path: '*', method: RequestMethod.ALL });
