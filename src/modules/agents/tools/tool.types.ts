@@ -1,39 +1,44 @@
 import { z } from 'zod';
-// Core tool contracts
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ToolContext
 //
-// Every tool the agent can call must satisfy ToolDefinition.
-// The schema is used to:
-//   1. Describe the tool to the LLM (converted to OpenAI function format)
-//   2. Validate inputs with Zod before execution (hard guardrail)
-//   3. Type-check handler inputs at compile time
+// Passed to every tool handler by the executor.
+// Services are injected here by AgentExecutorService — no dynamic imports.
+//
+// Path context: this file is at src/modules/agents/tools/
+// So sibling modules are reached via:
+//   ../../search/search.service      → src/modules/search/search.service
+//   ../../documents/documents.service → src/modules/documents/documents.service
+// ─────────────────────────────────────────────────────────────────────────────
+
+import { SearchService }    from '../../search/search.service';
+import { DocumentsService } from '../../documents/documents.service';
 
 export interface ToolContext {
-    /** Authenticated user making the request */
-    userId: string;
-    /** Trace correlation ID — propagated through every log and event */
-    correlationId: string;
+    userId:           string;
+    correlationId:    string;
+    /** Injected by AgentExecutorService — used by search_documents tool */
+    searchService:    SearchService;
+    /** Injected by AgentExecutorService — used by get_document_summary tool */
+    documentsService: DocumentsService;
 }
 
 export interface ToolResult<T = unknown> {
-    success:      boolean;
-    data:         T;
-    /** Optional token cost of running this tool (for LLM-backed tools) */
-    tokensCost?:  number;
+    success:     boolean;
+    data:        T;
+    tokensCost?: number;
 }
 
 export interface ToolDefinition<TSchema extends z.ZodSchema = z.ZodSchema> {
     name:        string;
     description: string;
     parameters:  TSchema;
-    handler:     (
+    handler: (
         params:  z.infer<TSchema>,
         context: ToolContext,
     ) => Promise<ToolResult>;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Trace types — captured for every think/act/observe step
-// ─────────────────────────────────────────────────────────────────────────────
 
 export type TracePhase = 'think' | 'act' | 'observe';
 
@@ -46,10 +51,6 @@ export interface TraceStep {
     durationMs: number;
     costUsd:    number;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Agent result — returned from runAgent regardless of termination reason
-// ─────────────────────────────────────────────────────────────────────────────
 
 export type TerminationReason =
     | 'completed'
@@ -71,10 +72,10 @@ export interface AgentResult {
 }
 
 export interface AgentConfig {
-    maxIterations:    number;
-    timeoutMs:        number;
-    costCeilingUsd:   number;
-    model:            string;
-    temperature:      number;
-    maxTokens:        number;
+    maxIterations:  number;
+    timeoutMs:      number;
+    costCeilingUsd: number;
+    model:          string;
+    temperature:    number;
+    maxTokens:      number;
 }
