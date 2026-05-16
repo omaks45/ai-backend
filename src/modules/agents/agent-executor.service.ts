@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { EventEmitter2 }      from '@nestjs/event-emitter';
+import { HttpService }         from '@nestjs/axios';
+import { EventEmitter2 }       from '@nestjs/event-emitter';
+import { firstValueFrom }       from 'rxjs';
 import {
     AgentResult,
     AgentConfig,
@@ -11,6 +13,8 @@ import { FinalAnswerParams } from '../agents/tools/final-answer.tool';
 import { TOOL_REGISTRY, getOpenAIToolSchemas, OpenAITool } from '../agents/tools/registry';
 import { AgentMetricsService } from './services/agent-metrics.service';
 import { AGENT_SYSTEM_PROMPT, agentConfig } from '../../config/agents-prompts.config';
+import { SearchService }    from '../../modules/search/search.service';
+import { DocumentsService } from '../../modules/documents/documents.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AgentExecutorService
@@ -42,8 +46,11 @@ export class AgentExecutorService {
     private readonly logger = new Logger(AgentExecutorService.name);
 
     constructor(
-        private readonly metrics:  AgentMetricsService,
-        private readonly events:   EventEmitter2,
+        private readonly metrics:   AgentMetricsService,
+        private readonly events:    EventEmitter2,
+        private readonly http:      HttpService,
+        private readonly search:    SearchService,
+        private readonly documents: DocumentsService,
     ) {}
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -63,7 +70,15 @@ export class AgentExecutorService {
         };
 
         const { question, userId, correlationId, availableDocs = [] } = options;
-        const toolContext: ToolContext = { userId, correlationId };
+        const toolContext: ToolContext & {
+        searchService:    SearchService;
+        documentsService: DocumentsService;
+        } = {
+        userId,
+        correlationId,
+        searchService:    this.search,
+        documentsService: this.documents,
+        };
 
         const trace:     TraceStep[] = [];
         let totalCostUsd = 0;
@@ -317,8 +332,14 @@ export class AgentExecutorService {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Calls the LLM via the configured provider.
-     * Ollama uses an OpenAI-compatible /v1/chat/completions endpoint.
+     * Calls the LLM chat completions endpoint via the injected HttpService.
+     *
+     * Both providers use the OpenAI-compatible /v1/chat/completions shape:
+     *   OpenAI  → https://api.openai.com/v1/chat/completions
+     *   Ollama  → http://localhost:11434/v1/chat/completions
+     *
+     * The base URL and Authorization header are resolved from env vars at
+     * runtime so no code changes are needed when switching providers.
      */
     private async callLLM(
         cfg:      AgentConfig,
@@ -326,7 +347,21 @@ export class AgentExecutorService {
         tools:    OpenAITool[],
         provider: 'openai' | 'ollama',
     ): Promise<Record<string, unknown>> {
-        const { openaiBreaker } = await import('../../lib/http/openai.breaker');
+        const apiBase = provider === 'openai'
+        ? (process.env.OPENAI_API_BASE ?? 'https://api.openai.com/v1')
+        : (process.env.OLLAMA_API_BASE ?? 'http://localhost:11434/v1');
+
+        const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        };
+
+        // Ollama does not require an Authorization header.
+        // OpenAI requires Bearer <key>.
+        if (provider === 'openai') {
+        const apiKey = process.env.OPENAI_API_KEY;
+        if (!apiKey) throw new Error('OPENAI_API_KEY env var is not set');
+        headers['Authorization'] = `Bearer ${apiKey}`;
+        }
 
         const payload: Record<string, unknown> = {
         model:       cfg.model,
@@ -337,11 +372,15 @@ export class AgentExecutorService {
         max_tokens:  cfg.maxTokens,
         };
 
-        // Ollama's OpenAI-compat layer uses the same payload shape.
-        // The circuit breaker is already pointed at the correct apiBase
-        // for the active provider via EMBEDDING_PROVIDER.
-        const response = await openaiBreaker.fire('/chat/completions', payload);
-        return response.data as Record<string, unknown>;
+        const response = await firstValueFrom(
+        this.http.post<Record<string, unknown>>(
+            `${apiBase}/chat/completions`,
+            payload,
+            { headers },
+        ),
+        );
+
+        return response.data;
     }
 
     /**
