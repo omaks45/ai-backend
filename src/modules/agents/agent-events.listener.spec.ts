@@ -42,7 +42,7 @@ describe('AgentEventsListener', () => {
 
     it('is defined', () => expect(listener).toBeDefined());
 
-    // Successful persistence
+    // ── Successful persistence ────────────────────────────────────────────────
 
     describe('handleAgentCompleted', () => {
         it('calls prisma.usageLog.create once', async () => {
@@ -118,7 +118,7 @@ describe('AgentEventsListener', () => {
         });
     });
 
-    // Resilience: Prisma failure
+    // ── Resilience: Prisma failure ────────────────────────────────────────────
 
     describe('error resilience', () => {
         it('does not throw when Prisma throws', async () => {
@@ -136,7 +136,7 @@ describe('AgentEventsListener', () => {
         });
     });
 
-    //Termination reasons
+    // ── Termination reasons ───────────────────────────────────────────────────
 
     describe('all termination reasons are persisted correctly', () => {
         const reasons = [
