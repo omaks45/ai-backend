@@ -9,7 +9,7 @@ import { DocumentsService }     from '../../modules/documents/documents.service'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AgentExecutorService tests
-
+//
 //   1. HttpService added to DI providers — executor now uses it for LLM calls
 //      instead of the removed openai.breaker dynamic import.
 //   2. SearchService added to DI providers — injected into ToolContext so
@@ -23,7 +23,7 @@ import { DocumentsService }     from '../../modules/documents/documents.service'
 // control LLM output. All guardrail assertions are unchanged.
 // ─────────────────────────────────────────────────────────────────────────────
 
-//  LLM response builders
+// ── LLM response builders ────────────────────────────────────────────────────
 
 function makeFinalAnswerResponse(
     answer     = 'The answer is 42.',
@@ -122,7 +122,7 @@ function makeInvalidArgsResponse() {
     };
 }
 
-// Mock factories
+//  Mock factories 
 
 function buildMockMetrics(): jest.Mocked<AgentMetricsService> {
     return {
@@ -173,7 +173,7 @@ function buildMockSearch(): jest.Mocked<SearchService> {
         },
         ]),
     } as unknown as jest.Mocked<SearchService>;
-}
+    }
 
 /**
  * DocumentsService mock — satisfies DI and ToolContext.
@@ -241,11 +241,11 @@ describe('AgentExecutorService', () => {
 
     afterEach(() => jest.restoreAllMocks());
 
-    // Instantiation
+    // ── Instantiation ──────────────────────────────────────────────────────────
 
     it('is defined', () => expect(service).toBeDefined());
 
-    //  Happy path: clean completion
+    // ── Happy path: clean completion ───────────────────────────────────────────
 
     describe('happy path — final_answer on first iteration', () => {
         it('returns terminationReason "completed"', async () => {
@@ -301,8 +301,7 @@ describe('AgentExecutorService', () => {
         expect(metrics.recordToolCall).toHaveBeenCalledWith('final_answer', 'success');
         });
     });
-
-    // Multi-step: search → final_answer
+        // Multi-step: search → final_answer
 
     describe('multi-step path — search then final_answer', () => {
         it('completes after search + final_answer iterations', async () => {
@@ -350,7 +349,7 @@ describe('AgentExecutorService', () => {
         });
     });
 
-    //  Guardrail 1a: timeout
+    //  Guardrail 1a: timeout 
 
     describe('guardrail — timeout', () => {
         it('returns terminationReason "timeout" when elapsed exceeds timeoutMs', async () => {
@@ -378,7 +377,7 @@ describe('AgentExecutorService', () => {
         });
     });
 
-    // Guardrail 1b: iteration limit
+    //  Guardrail 1b: iteration limit
 
     describe('guardrail — iteration limit', () => {
         it('returns terminationReason "iteration_limit" when loop exhausted', async () => {
@@ -404,7 +403,7 @@ describe('AgentExecutorService', () => {
         });
     });
 
-    // Guardrail 2: cost ceiling
+    //  Guardrail 2: cost ceiling
 
     describe('guardrail — cost ceiling', () => {
         it('stops when cost exceeds the ceiling', async () => {
@@ -521,7 +520,7 @@ describe('AgentExecutorService', () => {
         });
     });
 
-    // Plain-text fallback (Ollama)
+    //  Plain-text fallback (Ollama)
 
     describe('plain-text response fallback', () => {
         it('treats a no-tool-call response as completed', async () => {
@@ -538,7 +537,7 @@ describe('AgentExecutorService', () => {
         });
     });
 
-    // LLM call failure
+    //  LLM call failure
 
     describe('LLM call failure', () => {
         it('returns terminationReason "error" when LLM throws', async () => {
@@ -583,7 +582,7 @@ describe('AgentExecutorService', () => {
         });
     });
 
-    // Cost tracking
+    //Cost tracking 
 
     describe('cost tracking', () => {
         it('returns 0 totalCostUsd for Ollama (costCeilingUsd: 0)', async () => {
