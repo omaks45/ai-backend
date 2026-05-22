@@ -54,10 +54,30 @@ const OLLAMA_AGENT_CONFIG: AgentProviderConfig = {
     apiBase:              'http://localhost:11434',
     temperature:          0.1,
     maxTokens:            1_500,
-    // Tighter limits for local development — prevents long waits on slow hardware
-    maxIterations:        6,
-    timeoutMs:            120_000,   // Local inference can be slower
-    costCeilingUsd:       0,         // No cost — local model
+
+  // ── CPU inference limits ──────────────────────────────────────────────────
+  // Each LLM call to Ollama on CPU takes 2–4 minutes for a typical agent
+  // prompt (system prompt + tool schemas + conversation history).
+  //
+  // maxIterations: 3 instead of 6.
+  //   Each iteration = one LLM call. On CPU, 3 iterations = up to 12 minutes
+  //   total. 6 iterations would be up to 24 minutes — unusable in development.
+  //   3 is enough for: search_documents → (optional second search) → final_answer.
+  //
+  // timeoutMs: 600_000 (10 minutes).
+  //   Must be GREATER than (maxIterations × per-call fetch timeout).
+  //   callLLM uses AbortSignal.timeout(300_000) per fetch call.
+  //   With 3 iterations: worst case = 3 × 300s = 900s. We set 600s as a
+  //   reasonable ceiling — if 2 full iterations complete (~8 min) and a third
+  //   hasn't started, something is wrong. Adjust upward if needed.
+  //
+  //   THE ORIGINAL BUG: timeoutMs was 120_000 (2 min) but callLLM allowed
+  //   300_000 (5 min) per fetch. The agent guardrail fired first at 2m,
+  //   killing the run before Ollama finished its first response.
+    maxIterations:        3,
+    timeoutMs:            600_000,  // 10 minutes — must exceed per-call fetch timeout
+
+    costCeilingUsd:       0,        // No cost — local model
     inputCostPerMillion:  0,
     outputCostPerMillion: 0,
 };
@@ -111,7 +131,7 @@ WORKFLOW:
 5. Call final_answer once you have enough evidence, or once you have determined the answer is not available.
 
 SOFT GUARDRAILS (follow these; hard limits are enforced separately):
-- Search at most 3 times. If you cannot find the answer in 3 searches, call final_answer with confidence "low".
+- Search at most 2 times. If you cannot find the answer in 2 searches, call final_answer with confidence "low".
 - Never call get_document_summary more than once per document.
 - Never call analyze_chunks without first having called search_documents.
 

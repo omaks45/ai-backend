@@ -239,3 +239,40 @@ model IngestionMetric {
   @@index([documentId])
   @@index([createdAt])
 }
+
+
+model PromptTemplate {
+    id        String   @id @default(uuid())
+    taskType  String
+    version   String
+    name      String
+    content   String
+    isActive  Boolean  @default(false)
+    metadata  String?
+    createdAt DateTime @default(now())
+
+    @@unique([taskType, version])
+    @@index([taskType, isActive])
+}
+
+model AIAuditLog {
+    id            String   @id @default(uuid())
+    userId        String
+    correlationId String
+    taskType      String
+    model         String
+    promptVersion String
+    inputTokens   Int
+    outputTokens  Int
+    costUsd       Float
+    latencyMs     Int
+    fallbackUsed  Boolean  @default(false)
+    inputSummary  String
+    outputSummary String
+    createdAt     DateTime @default(now())
+
+    @@index([userId, createdAt])
+    @@index([taskType, createdAt])
+    @@index([model, createdAt])
+    @@index([correlationId])
+}

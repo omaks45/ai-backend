@@ -15,18 +15,16 @@ import Redis from 'ioredis';
 import { RedisService } from '../../redis/redis.service';
 
 // TTL constants (seconds)
-
 export const CACHE_TTL = {
-  SHORT:     60,                    // 1 min  — rate-limit windows, session data
-  MEDIUM:    5  * 60,               // 5 min  — user permissions, role lookups
-  LONG:      60 * 60,               // 1 hr   — document metadata
-  EMBEDDING: 7  * 24 * 60 * 60,    // 7 days — embeddings (deterministic, expensive)
+  SHORT:     60,
+  MEDIUM:    5  * 60,
+  LONG:      60 * 60,
+  EMBEDDING: 7  * 24 * 60 * 60,
 } as const;
 
 export type CacheTTL = (typeof CACHE_TTL)[keyof typeof CACHE_TTL];
 
-//Key builders (centralised naming, prevents typos)
-
+// Key builders (centralised naming, prevents typos)
 export const CacheKeys = {
   embedding:    (hash: string)   => `embed:${hash}`,
   userPerms:    (userId: string) => `perms:${userId}`,
@@ -34,7 +32,6 @@ export const CacheKeys = {
   tokenBlocked: (jti: string)    => `blacklist:${jti}`,
   rateLimitKey: (key: string)    => `rl:${key}`,
 } as const;
-
 
 @Injectable()
 export class CacheService {
@@ -47,14 +44,14 @@ export class CacheService {
     this.client = this.redisService.client;
   }
 
+  // ── Core get/set/del ───────────────────────────────────────────────────────
+
   async get<T>(key: string): Promise<T | null> {
     const raw = await this.client.get(key);
     if (!raw) return null;
-
     try {
       return JSON.parse(raw) as T;
     } catch {
-      // Stored as a plain string — return as-is
       return raw as unknown as T;
     }
   }
@@ -73,7 +70,7 @@ export class CacheService {
     return (await this.client.exists(key)) === 1;
   }
 
-  //  Token blacklist 
+  // ── Token blacklist ────────────────────────────────────────────────────────
 
   async blacklistToken(jti: string, ttlSeconds: number): Promise<void> {
     await this.client.setex(CacheKeys.tokenBlocked(jti), ttlSeconds, '1');
@@ -84,7 +81,7 @@ export class CacheService {
     return this.exists(CacheKeys.tokenBlocked(jti));
   }
 
-  // Rate-limit / set helpers
+  // ── Rate-limit / set helpers ───────────────────────────────────────────────
 
   async sadd(key: string, ...members: string[]): Promise<number> {
     return this.client.sadd(key, ...members);
@@ -102,11 +99,11 @@ export class CacheService {
     return this.client.incr(key);
   }
 
-  //  Atomic increment with TTL (safe rate-limit counter)
-  // Uses a pipeline so both commands are sent in one round-trip.
-  // The EXPIRE is only set on the first call (when incr returns 1) to avoid
-  // resetting the window on every request.
-
+  /**
+   * Atomic increment + set TTL in one pipeline round-trip.
+   * The EXPIRE is only set when incr returns 1 (first call in window)
+   * to avoid resetting the window on every request.
+   */
   async incrWithTTL(key: string, ttlSeconds: number): Promise<number> {
     const pipeline = this.client.pipeline();
     pipeline.incr(key);
@@ -114,18 +111,40 @@ export class CacheService {
     const results = await pipeline.exec();
     // results: [[err, incrValue], [err, expireValue]]
     const incrResult = results?.[0];
-    if (incrResult?.[0]) throw incrResult[0]; // surface Redis error
+    if (incrResult?.[0]) throw incrResult[0];
     return incrResult?.[1] as number;
   }
 
-  //  Diagnostics 
+  // ── MCP budget tracking ────────────────────────────────────────────────────
+
+  /**
+   * Atomically increment a float value stored at key.
+   * Redis INCRBYFLOAT is a single atomic command — no read-modify-write race.
+   * Used by BudgetService to accumulate AI spend across concurrent requests.
+   */
+  async incrByFloat(key: string, increment: number): Promise<number> {
+    const result = await this.client.incrbyfloat(key, increment);
+    return parseFloat(result as unknown as string);
+  }
+
+  /**
+   * Get the remaining TTL of a key in seconds.
+   *   -1 = key exists with no expiry (persistent)
+   *   -2 = key does not exist
+   * Used by BudgetService to set month-end expiry only on first write.
+   */
+  async ttl(key: string): Promise<number> {
+    return this.client.ttl(key);
+  }
+
+  // ── Diagnostics ────────────────────────────────────────────────────────────
 
   async ping(): Promise<string> {
     return this.client.ping();
   }
 
   /**
-   * Expose the raw client for libraries that need it directly
+   * Expose the raw Redis client for libraries that need it directly
    * (e.g. rate-limit-redis, BullMQ).
    */
   getClient(): Redis {

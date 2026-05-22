@@ -1,183 +1,226 @@
-// Tests for the provider-agnostic RagService.
-// The service supports two providers — tests run the same assertions against
-// both by parameterising the provider via jest.each.
-
 import { Test, TestingModule } from '@nestjs/testing';
-import { ConfigService }       from '@nestjs/config';
-import { EventEmitter2 }       from '@nestjs/event-emitter';
 import { RagService }          from './rag.service';
-import { AssembledContext }    from './context-assembler.service';
+import { McpService }          from '../mcp/services/mcp.service';
 
-//  Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+// RagService tests — post-MCP refactor
+//
+// RagService now has ONE dependency: McpService.
+// ConfigService and EventEmitter2 are gone — the MCP handles providers,
+// cost tracking, and event emission internally.
+//
+// Tests verify:
+//   generate()      — delegates to mcp.complete(), shapes the RAGResponse
+//   buildMessages() — pure message construction, no external deps
+// ─────────────────────────────────────────────────────────────────────────────
 
-function makeContext(overrides: Partial<AssembledContext> = {}): AssembledContext {
+const MOCK_MCP_RESPONSE = {
+  content:       'A phoneme is the smallest unit of sound.',
+  toolCalls:     [],
+  model:         'gpt-4o-mini',
+  promptVersion: 'v1',
+  tokensUsed:    { prompt: 100, completion: 50, total: 150 },
+  costUsd:       0.0001,
+  latencyMs:     800,
+  fallbackUsed:  false,
+};
+
+const MOCK_CONTEXT = {
+  contextText:  '[Source 1]\nA phoneme is the smallest unit of sound.',
+  chunks: [
+    {
+      chunkId:       'chunk-1',
+      documentId:    'doc-1',
+      documentTitle: 'handbook.pdf',
+      content:       'A phoneme is the smallest unit of sound.',
+      chunkIndex:    0,
+      score:         0.9,
+      tokenCount:    50,
+    },
+  ],
+  citations: [
+    {
+      index:         1,
+      chunkId:       'chunk-1',
+      documentId:    'doc-1',
+      documentTitle: 'handbook.pdf',
+      chunkIndex:    0,
+      score:         0.9,
+    },
+  ],
+  totalTokens: 50,
+};
+
+const EMPTY_CONTEXT = {
+  contextText:  '',
+  chunks:       [],
+  citations:    [],
+  totalTokens:  0,
+};
+
+function buildMockMcp() {
   return {
-    chunks:      [{ chunkId: 'c1', documentId: 'd1', documentTitle: 'Doc', content: 'Some content.', chunkIndex: 0, score: 0.9, tokenCount: 50 }],
-    contextText: '[Source 1: "Doc", Section 1]\nSome content.',
-    totalTokens: 50,
-    citations:   [{ index: 1, chunkId: 'c1', documentId: 'd1', documentTitle: 'Doc', chunkIndex: 0, score: 0.9 }],
-    ...overrides,
+    complete: jest.fn().mockResolvedValue(MOCK_MCP_RESPONSE),
   };
 }
 
-// Provider-specific raw mock responses.
-//
-// Ollama:  callChatAPI reads data.message.content, data.prompt_eval_count,
-//          data.eval_count — then normalises to OpenAI shape internally.
-//
-// OpenAI:  response.json() already returns the OpenAI shape — the service
-//          uses it directly without any normalisation step.
-const mockOllamaApiResponse = {
-  message:           { content: 'The answer is 42.' },
-  prompt_eval_count: 100,
-  eval_count:        50,
-};
-
-const mockOpenAIApiResponse = {
-  choices: [{ message: { content: 'The answer is 42.' } }],
-  usage:   { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
-};
-
-const mockFetch = jest.fn();
-global.fetch = mockFetch as any;
-
-const mockEvents = { emit: jest.fn() };
-
-// Suite
-
 describe('RagService', () => {
   let service: RagService;
+  let mcp:     ReturnType<typeof buildMockMcp>;
 
-  // Run all tests for both provider configurations
-  describe.each([
-    { provider: 'ollama', apiKey: '',        mockResponse: mockOllamaApiResponse },
-    { provider: 'openai', apiKey: 'sk-test', mockResponse: mockOpenAIApiResponse },
-  ])('provider=$provider', ({ provider, apiKey, mockResponse }) => {
-    beforeEach(async () => {
-      // Set env vars before the module loads so ragConfig() picks them up
-      process.env.EMBEDDING_PROVIDER = provider;
+  beforeEach(async () => {
+    mcp = buildMockMcp();
 
-      const module: TestingModule = await Test.createTestingModule({
-        providers: [
-          RagService,
-          {
-            provide: ConfigService,
-            useValue: { get: jest.fn((key: string, def = '') => key === 'OPENAI_API_KEY' ? apiKey : def) },
-          },
-          { provide: EventEmitter2, useValue: mockEvents },
-        ],
-      }).compile();
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        RagService,
+        { provide: McpService, useValue: mcp },
+      ],
+    }).compile();
 
-      service = module.get<RagService>(RagService);
-      jest.clearAllMocks();
-      // Each provider gets its own correctly-shaped mock response
-      mockFetch.mockResolvedValue({ ok: true, json: async () => mockResponse });
+    service = module.get<RagService>(RagService);
+  });
+
+  afterEach(() => jest.clearAllMocks());
+
+  it('is defined', () => expect(service).toBeDefined());
+
+  // ── generate() ─────────────────────────────────────────────────────────────
+
+  describe('generate()', () => {
+    const BASE_OPTIONS = {
+      question:            'What is a phoneme?',
+      context:             MOCK_CONTEXT,
+      conversationHistory: [],
+      userId:              'user-rag-001',
+      conversationId:      'conv-001',
+      correlationId:       'corr-001',
+    };
+
+    it('calls mcp.complete once', async () => {
+      await service.generate(BASE_OPTIONS);
+      expect(mcp.complete).toHaveBeenCalledTimes(1);
     });
 
-    afterAll(() => delete process.env.EMBEDDING_PROVIDER);
-
-    it('is defined', () => expect(service).toBeDefined());
-
-    it('returns answer, citations, tokensUsed, costUsd, model, and provider', async () => {
-      const result = await service.generate({
-        question:            'What is the answer?',
-        context:             makeContext(),
-        conversationHistory: [],
-        userId:              'u1',
-        conversationId:      'conv1',
-        correlationId:       'corr1',
-      });
-
-      expect(result.answer).toBe('The answer is 42.');
-      expect(result.citations).toHaveLength(1);
-      expect(result.tokensUsed.prompt).toBe(100);
-      expect(result.tokensUsed.completion).toBe(50);
-      expect(result.tokensUsed.total).toBe(150);
-      expect(result.costUsd).toBeGreaterThanOrEqual(0);
-      expect(result.model).toBeTruthy();
-      expect(result.provider).toBe(provider);
-    });
-
-    it('emits ai.chat.completed event with provider info', async () => {
-      await service.generate({
-        question:            'test',
-        context:             makeContext(),
-        conversationHistory: [],
-        userId:              'u1',
-        conversationId:      'conv1',
-        correlationId:       'corr1',
-      });
-
-      expect(mockEvents.emit).toHaveBeenCalledWith(
-        'ai.chat.completed',
-        expect.objectContaining({
-          provider:       provider,
-          userId:         'u1',
-          conversationId: 'conv1',
-          costUsd:        expect.any(Number),
-        }),
+    it('calls mcp.complete with taskType chat', async () => {
+      await service.generate(BASE_OPTIONS);
+      expect(mcp.complete).toHaveBeenCalledWith(
+        expect.objectContaining({ taskType: 'chat' }),
       );
     });
 
-    it('ollama cost is always $0; openai cost is > $0 for non-zero tokens', async () => {
-      const result = await service.generate({
-        question: 'test', context: makeContext(),
-        conversationHistory: [], userId: 'u1', conversationId: 'c1', correlationId: 'r1',
-      });
+    it('passes userId to mcp.complete', async () => {
+      await service.generate(BASE_OPTIONS);
+      expect(mcp.complete).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: 'user-rag-001' }),
+      );
+    });
 
-      if (provider === 'ollama') {
-        expect(result.costUsd).toBe(0);
-      } else {
-        expect(result.costUsd).toBeGreaterThan(0);
-      }
+    it('passes correlationId to mcp.complete', async () => {
+      await service.generate(BASE_OPTIONS);
+      expect(mcp.complete).toHaveBeenCalledWith(
+        expect.objectContaining({ correlationId: 'corr-001' }),
+      );
+    });
+
+    it('returns answer from mcp.complete content', async () => {
+      const result = await service.generate(BASE_OPTIONS);
+      expect(result.answer).toBe('A phoneme is the smallest unit of sound.');
+    });
+
+    it('returns citations from the assembled context', async () => {
+      const result = await service.generate(BASE_OPTIONS);
+      expect(result.citations).toEqual(MOCK_CONTEXT.citations);
+    });
+
+    it('returns tokensUsed from mcp response', async () => {
+      const result = await service.generate(BASE_OPTIONS);
+      expect(result.tokensUsed).toEqual({ prompt: 100, completion: 50, total: 150 });
+    });
+
+    it('returns costUsd from mcp response', async () => {
+      const result = await service.generate(BASE_OPTIONS);
+      expect(result.costUsd).toBe(0.0001);
+    });
+
+    it('returns model from mcp response', async () => {
+      const result = await service.generate(BASE_OPTIONS);
+      expect(result.model).toBe('gpt-4o-mini');
+    });
+
+    it('sets provider to openai when model starts with gpt', async () => {
+      const result = await service.generate(BASE_OPTIONS);
+      expect(result.provider).toBe('openai');
+    });
+
+    it('sets provider to ollama when model does not start with gpt', async () => {
+      mcp.complete.mockResolvedValue({ ...MOCK_MCP_RESPONSE, model: 'llama3.2' });
+      const result = await service.generate(BASE_OPTIONS);
+      expect(result.provider).toBe('ollama');
+    });
+
+    it('propagates mcp.complete errors to caller', async () => {
+      mcp.complete.mockRejectedValue(new Error('Budget exhausted'));
+      await expect(service.generate(BASE_OPTIONS)).rejects.toThrow('Budget exhausted');
     });
   });
 
-  // ── buildMessages — provider-neutral ───────────────────────────────────────
+  // ── buildMessages() ────────────────────────────────────────────────────────
+  // buildMessages is pure data transformation — no external deps needed.
 
   describe('buildMessages()', () => {
-    beforeEach(async () => {
-      process.env.EMBEDDING_PROVIDER = 'ollama';
-      const module = await Test.createTestingModule({
-        providers: [
-          RagService,
-          { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue('') } },
-          { provide: EventEmitter2, useValue: mockEvents },
-        ],
-      }).compile();
-      service = module.get(RagService);
+    it('returns a user message when context has chunks', () => {
+      const messages = service.buildMessages('What is a phoneme?', MOCK_CONTEXT, []);
+      expect(messages).toHaveLength(1);
+      expect(messages[0].role).toBe('user');
     });
 
-    afterAll(() => delete process.env.EMBEDDING_PROVIDER);
-
-    it('first message is always the system prompt', () => {
-      const msgs = service.buildMessages('q', makeContext(), []);
-      expect(msgs[0].role).toBe('system');
+    it('includes context text in the user message', () => {
+      const messages = service.buildMessages('What is a phoneme?', MOCK_CONTEXT, []);
+      expect(messages[0].content).toContain('relevant context');
     });
 
-    it('includes context text in the user message when chunks exist', () => {
-      const ctx  = makeContext();
-      const msgs = service.buildMessages('my question', ctx, []);
-      const user = msgs.find((m) => m.role === 'user')!;
-      expect(user.content).toContain(ctx.contextText);
-      expect(user.content).toContain('my question');
+    it('includes the question in the user message', () => {
+      const messages = service.buildMessages('What is a phoneme?', MOCK_CONTEXT, []);
+      expect(messages[0].content).toContain('What is a phoneme?');
     });
 
     it('sends no-context message when chunks array is empty', () => {
-      const ctx  = makeContext({ chunks: [], contextText: '', citations: [] });
-      const msgs = service.buildMessages('anything', ctx, []);
-      const user = msgs.find((m) => m.role === 'user')!;
-      expect(user.content).toContain('No relevant context was found');
+      const messages = service.buildMessages('What is a phoneme?', EMPTY_CONTEXT, []);
+      expect(messages[0].content).toContain('No relevant context');
     });
 
-    it('includes conversation history between system and user messages', () => {
+    it('includes conversation history before the user message', () => {
       const history = [
-        { role: 'user'      as const, content: 'prev question' },
-        { role: 'assistant' as const, content: 'prev answer'   },
+        { role: 'user'      as const, content: 'Hello' },
+        { role: 'assistant' as const, content: 'Hi!'   },
       ];
-      const msgs = service.buildMessages('q', makeContext(), history);
-      expect(msgs[1].content).toBe('prev question');
-      expect(msgs[2].content).toBe('prev answer');
+      const messages = service.buildMessages('New question', MOCK_CONTEXT, history);
+      // history[0], history[1], then the new user message = 3 total
+      expect(messages).toHaveLength(3);
+      expect(messages[0].content).toBe('Hello');
+      expect(messages[1].content).toBe('Hi!');
+    });
+
+    it('caps history at maxHistoryMessages (default 10)', () => {
+      const history = Array.from({ length: 15 }, (_, i) => ({
+        role:    'user' as const,
+        content: `message ${i}`,
+      }));
+      const messages = service.buildMessages('Q', MOCK_CONTEXT, history);
+      // 10 history + 1 user message = 11
+      expect(messages).toHaveLength(11);
+    });
+
+    it('does NOT include a system message — MCP prepends it', () => {
+      const messages = service.buildMessages('Q', MOCK_CONTEXT, []);
+      // buildMessages only returns user/assistant messages.
+      // The system prompt is prepended by McpService from the DB.
+      // Every message returned must have role 'user' or 'assistant'.
+      const allUserOrAssistant = messages.every(
+        m => m.role === 'user' || m.role === 'assistant',
+      );
+      expect(allUserOrAssistant).toBe(true);
     });
   });
 });

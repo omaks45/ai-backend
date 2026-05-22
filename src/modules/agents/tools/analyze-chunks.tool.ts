@@ -2,95 +2,85 @@ import { z } from 'zod';
 import { ToolDefinition, ToolResult } from './tool.types';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// analyze_chunks
+// analyze_chunks tool
 //
-// Used after search_documents when the agent needs to COMPARE or AGGREGATE
-// data across multiple passages. Common uses:
-//   - "Compare the parental leave policies across all documents"
-//   - "What is the earliest and latest deadline mentioned?"
-//   - "Which document has the highest penalty clause?"
+// Structures passages already retrieved by search_documents so the LLM can
+// extract and compare specific data points across documents.
 //
-// The agent passes the raw passages it retrieved and specifies what to extract.
-// This tool calls the LLM internally (cheap model, structured output) so the
-// main agent model doesn't have to process the full context itself.
+// This tool is entirely in-process — no external service, no LLM call.
+// The agent model does the actual extraction; this tool structures the request
+// so the model knows what to look for in each passage.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const ChunkSchema = z.object({
-    document: z.string().describe('Document title this passage came from'),
-    content:  z.string().describe('The raw text passage'),
+    document: z.string().describe('Document title the passage came from'),
+    content:  z.string().describe('The raw text passage from search_documents'),
 });
 
 const AnalyzeChunksSchema = z.object({
     chunks: z
         .array(ChunkSchema)
-        .min(1, 'Provide at least one chunk to analyse')
-        .max(10, 'Maximum 10 chunks per analysis call')
-        .describe('The text passages retrieved from search_documents'),
+        .min(1,  'Provide at least one chunk')
+        .max(10, 'Maximum 10 chunks per call')
+        .describe('Passages from search_documents results'),
 
     extractionGoal: z
         .string()
         .min(10)
         .max(300)
         .describe(
-        'What specific data points to extract or compare. Be precise. ' +
-        'Example: "Extract the duration, eligibility criteria, and pay rate ' +
-        'of parental leave from each passage."',
+        'What to extract or compare. Be specific. ' +
+        'Example: "Extract the duration, eligibility, and pay rate of parental leave."',
         ),
 
     outputFormat: z
-        .enum(['comparison_table', 'list', 'summary'])
+        .enum(['comparison', 'list', 'summary'])
         .default('summary')
         .describe(
-        'How to structure the output. Use comparison_table when contrasting ' +
-        'the same attribute across documents, list for enumerating items, ' +
-        'summary for synthesising into prose.',
+        'comparison — contrast same attribute across documents; ' +
+        'list — enumerate findings; ' +
+        'summary — synthesise into prose.',
         ),
 });
 
 type AnalyzeChunksParams = z.infer<typeof AnalyzeChunksSchema>;
 
-export interface AnalysisRow {
-    document:  string;
-    extracted: Record<string, string | number | null>;
-}
-
 export interface AnalyzeChunksOutput {
-    outputFormat:  string;
+    outputFormat:   string;
     extractionGoal: string;
-    rows?:         AnalysisRow[];   // populated for comparison_table
-    items?:        string[];        // populated for list
-    summary?:      string;          // populated for summary
-    conflicts?:    string[];        // flagged when documents contradict each other
+    extracted: Array<{
+        document: string;
+        findings: string;
+    }>;
+    conflicts?: string[];
 }
 
 export const analyzeChunksTool: ToolDefinition<typeof AnalyzeChunksSchema> = {
     name: 'analyze_chunks',
 
     description:
-        'Extract specific data points from retrieved text passages and compare ' +
-        'or aggregate them across documents. Use this AFTER search_documents when ' +
-        'you need to contrast values across sources or summarise multiple passages ' +
-        'into structured data. Do NOT use this as a substitute for search_documents.',
+        'Extract and compare specific data points from retrieved passages. ' +
+        'Use AFTER search_documents when comparing the same attribute across documents. ' +
+        'Do NOT use as a substitute for search_documents.',
 
     parameters: AnalyzeChunksSchema,
 
-    handler: async (
-        params: AnalyzeChunksParams,
-        context,
-    ): Promise<ToolResult<AnalyzeChunksOutput>> => {
-        const { analyzeChunks } = await import('../../services/analysis.service');
-
-        const result = await analyzeChunks({
-        chunks:         params.chunks,
-        extractionGoal: params.extractionGoal,
-        outputFormat:   params.outputFormat,
-        correlationId:  context.correlationId,
-        });
+    // No context services needed — pure structural pass-through.
+    // The model reads the returned structure and fills in findings based on
+    // the extractionGoal when it processes the tool result.
+    handler: async (params: AnalyzeChunksParams): Promise<ToolResult<AnalyzeChunksOutput>> => {
+        const extracted = params.chunks.map(chunk => ({
+        document: chunk.document,
+        findings: chunk.content.slice(0, 600), // trim to avoid bloating context window
+        }));
 
         return {
-        success:    true,
-        data:       result,
-        tokensCost: result.tokensCost,
+        success: true,
+        data: {
+            outputFormat:   params.outputFormat,
+            extractionGoal: params.extractionGoal,
+            extracted,
+        },
         };
     },
 };

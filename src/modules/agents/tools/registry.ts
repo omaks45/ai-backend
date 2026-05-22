@@ -1,23 +1,15 @@
 import { z } from 'zod';
 import { ToolDefinition } from './tool.types';
-import { searchDocumentsTool }   from './search-documents.tool';
+import { searchDocumentsTool }    from './search-documents.tool';
 import { getDocumentSummaryTool } from './get-document-summary.tool';
-import { analyzeChunksTool }     from './analyze-chunks.tool';
-import { finalAnswerTool }       from './final-answer.tool';
+import { analyzeChunksTool }      from './analyze-chunks.tool';
+import { finalAnswerTool }        from './final-answer.tool';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TOOL_REGISTRY — the authoritative whitelist
 //
-// This is a security boundary. If a tool name is not registered here, the
-// executor rejects it unconditionally — even if the LLM hallucinates a
-// plausible-sounding name. Unknown tool calls are fed back as errors so the
-// model can self-correct within the same iteration.
-//
-// To add a new tool:
-//   1. Create src/agents/tools/your-tool.tool.ts
-//   2. Export a ToolDefinition from it
-//   3. Add it to TOOL_REGISTRY below
-//   That's it. No executor changes required.
+// Security boundary: any tool name not in this registry is rejected by the
+// executor unconditionally, even if the LLM hallucinates a plausible name.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const TOOL_REGISTRY: Readonly<Record<string, ToolDefinition>> = {
@@ -30,43 +22,55 @@ export const TOOL_REGISTRY: Readonly<Record<string, ToolDefinition>> = {
 // ─────────────────────────────────────────────────────────────────────────────
 // Zod → JSON Schema conversion
 //
-// OpenAI's function-calling format requires JSON Schema, not Zod.
-// We derive it from the same Zod object used for validation so there is a
-// single source of truth — the schema the LLM sees always matches the schema
-// used to validate what it sends back.
+// OpenAI function-calling requires JSON Schema. We derive it from the same
+// Zod schemas used for validation — single source of truth.
 //
-// final_answer is excluded from the tools list sent to the model because we
-// treat it as a special exit signal in the executor. Including it here would
-// let the model call it at any time without our interceptor noticing first.
-// It is listed in the system prompt description so the model knows it exists.
+// WHY INLINE INSTEAD OF zod-to-json-schema PACKAGE:
+// Avoids an extra dependency and covers exactly the Zod types used in this
+// project: ZodObject, ZodString, ZodNumber, ZodBoolean, ZodEnum,
+// ZodArray, ZodOptional, ZodDefault.
+//
+// ZOD VERSION COMPATIBILITY FIX (the bug that caused all test failures):
+// Zod changed _def.shape from a getter function to a plain object between
+// minor versions. The original code called _def.shape() which throws
+// "shape is not a function" on Zod v3.20+.
+// Fix: check typeof and call only if it is a function.
+//
+// Same applies to ZodArray: _def.type vs _def.innerType across versions.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function zodToJsonSchema(schema: z.ZodSchema): Record<string, unknown> {
-  // Inline implementation to avoid a heavy dependency (zod-to-json-schema).
-  // Covers ZodObject, ZodString, ZodNumber, ZodBoolean, ZodEnum, ZodOptional,
-  // ZodDefault, ZodArray — the only types we use in tool schemas.
     return convertZodNode(schema);
 }
 
 function convertZodNode(node: z.ZodTypeAny): Record<string, unknown> {
+    // Unwrap ZodOptional and ZodDefault — both wrap an inner type
     if (node instanceof z.ZodOptional || node instanceof z.ZodDefault) {
         return convertZodNode((node as any)._def.innerType);
     }
 
     if (node instanceof z.ZodString) {
         const schema: Record<string, unknown> = { type: 'string' };
-        const checks = (node as any)._def.checks as Array<{ kind: string; value?: unknown; message?: string }>;
-        for (const c of checks ?? []) {
+        const checks = ((node as any)._def.checks ?? []) as Array<{
+        kind: string;
+        value?: unknown;
+        }>;
+        for (const c of checks) {
         if (c.kind === 'min') schema.minLength = c.value;
         if (c.kind === 'max') schema.maxLength = c.value;
+        if (c.kind === 'uuid') schema.format = 'uuid';
         }
-        if ((node as any)._def.description) schema.description = (node as any)._def.description;
+        if ((node as any)._def.description) {
+        schema.description = (node as any)._def.description;
+        }
         return schema;
     }
 
     if (node instanceof z.ZodNumber) {
         const schema: Record<string, unknown> = { type: 'number' };
-        if ((node as any)._def.description) schema.description = (node as any)._def.description;
+        if ((node as any)._def.description) {
+        schema.description = (node as any)._def.description;
+        }
         return schema;
     }
 
@@ -75,29 +79,47 @@ function convertZodNode(node: z.ZodTypeAny): Record<string, unknown> {
     }
 
     if (node instanceof z.ZodEnum) {
-        return {
-        type:        'string',
-        enum:        (node as any)._def.values,
-        description: (node as any)._def.description,
+        const schema: Record<string, unknown> = {
+        type: 'string',
+        enum: (node as any)._def.values,
         };
+        if ((node as any)._def.description) {
+        schema.description = (node as any)._def.description;
+        }
+        return schema;
     }
 
     if (node instanceof z.ZodArray) {
-        return {
-        type:        'array',
-        items:       convertZodNode((node as any)._def.type),
-        description: (node as any)._def.description,
+        // Zod v3: element type may be _def.type (older) or _def.type (current).
+        // Both are the same key but guard against any edge cases.
+        const itemDef = (node as any)._def.type ?? (node as any)._def.innerType;
+        const schema: Record<string, unknown> = {
+        type:  'array',
+        items: convertZodNode(itemDef),
         };
+        if ((node as any)._def.description) {
+        schema.description = (node as any)._def.description;
+        }
+        return schema;
     }
 
     if (node instanceof z.ZodObject) {
-        const shape  = (node as any)._def.shape();
+        // ── THE FIX ──────────────────────────────────────────────────────────────
+        // Zod changed _def.shape from a callable getter to a plain object property
+        // between v3 minor versions. Calling _def.shape() on a plain object throws
+        // "shape is not a function". We handle both:
+        //   - older Zod: _def.shape is a function → call it
+        //   - newer Zod: _def.shape is a plain object → use directly
+        const rawShape = (node as any)._def.shape;
+        const shape: Record<string, z.ZodTypeAny> =
+        typeof rawShape === 'function' ? rawShape() : rawShape;
+
         const props: Record<string, unknown> = {};
         const required: string[] = [];
 
         for (const [key, value] of Object.entries(shape)) {
         props[key] = convertZodNode(value as z.ZodTypeAny);
-        // A field is required unless it's ZodOptional or has a ZodDefault
+        // A field is required unless it is wrapped in ZodOptional or ZodDefault
         if (
             !(value instanceof z.ZodOptional) &&
             !(value instanceof z.ZodDefault)
@@ -115,21 +137,20 @@ function convertZodNode(node: z.ZodTypeAny): Record<string, unknown> {
     }
 
     return {};
-    }
+}
 
-    export type OpenAITool = {
-        type: 'function';
-        function: {
-            name:        string;
-            description: string;
-            parameters:  Record<string, unknown>;
-        };
+export type OpenAITool = {
+    type: 'function';
+    function: {
+        name:        string;
+        description: string;
+        parameters:  Record<string, unknown>;
+    };
 };
 
 /**
- * Returns the tool schemas in OpenAI function-calling format.
- * Excludes final_answer — it is intercepted by the executor, not dispatched
- * through the normal tool-call path.
+ * Returns tool schemas in OpenAI function-calling format.
+ * Excludes final_answer — the executor intercepts it before dispatch.
  */
 export function getOpenAIToolSchemas(): OpenAITool[] {
     return Object.values(TOOL_REGISTRY)
@@ -144,9 +165,6 @@ export function getOpenAIToolSchemas(): OpenAITool[] {
         }));
 }
 
-/**
- * Returns all registered tool names — used by observability to label metrics.
- */
 export function getRegisteredToolNames(): string[] {
     return Object.keys(TOOL_REGISTRY);
 }

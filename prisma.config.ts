@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+/// <reference types="node" />
 import 'dotenv/config';
 
 export default {

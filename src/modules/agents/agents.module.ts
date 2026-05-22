@@ -2,38 +2,34 @@ import { Module }              from '@nestjs/common';
 import { HttpModule }          from '@nestjs/axios';
 import { AgentController }     from './agents.controller';
 import { AgentExecutorService }  from './agent-executor.service';
-import { AgentMetricsService }   from './services/agent-metrics.service';
-import { AgentEventsListener }   from './agent-events.listener';
+import { AgentMetricsService }   from '../agents/services/agent-metrics.service';
+import { AgentEventsListener }   from '../agents/agent-events.listener';
 import { SearchModule }          from '../search/search.module';
 import { DocumentsModule }       from '../documents/documents.module';
+import { RbacModule }            from '../rbac/rbac.module';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AgentModule
 //
-// Wires the agent controller, executor, metrics, and event listener.
-// Follows the same structure as RagModule, SearchModule, etc.
+// HttpModule     — HttpService for OpenAI/Ollama LLM calls
+// SearchModule   — SearchService for the search_documents tool
+// DocumentsModule — DocumentsService for document list + summaries
+// RbacModule     — RbacService required by PermissionsGuard on AgentController
 //
-// HttpModule    — provides HttpService for OpenAI/Ollama LLM calls
-// SearchModule  — provides SearchService for the search_documents tool
-// DocumentsModule — provides DocumentsService for getAvailableDocs + summaries
-//
-// AgentMetricsService uses its own private Prometheus Registry to avoid
-// metric name collisions with MetricsService. The /metrics endpoint in
-// MetricsController should be updated to merge both registries:
-//
-//   const [main, agent] = await Promise.all([
-//     this.metrics.getMetrics(),
-//     this.agentMetrics.getMetrics(),
-//   ]);
-//   res.set('Content-Type', this.metrics.getContentType());
-//   res.send(main + '\n' + agent);
+// Why RbacModule is needed here:
+// AgentController uses @UseGuards(PermissionsGuard). PermissionsGuard injects
+// RbacService to check the user's permissions. NestJS resolves guard
+// dependencies from the host module's context — so every module whose
+// controller uses PermissionsGuard must import RbacModule.
+// ConversationsModule, DocumentsModule etc. all do the same.
 // ─────────────────────────────────────────────────────────────────────────────
 
 @Module({
   imports: [
-    HttpModule,       // provides HttpService → injected into AgentExecutorService
-    SearchModule,     // provides SearchService → injected into AgentExecutorService
-    DocumentsModule,  // provides DocumentsService → injected into AgentController
+    HttpModule,      // HttpService → AgentExecutorService
+    SearchModule,    // SearchService → AgentExecutorService (ToolContext)
+    DocumentsModule, // DocumentsService → AgentController + AgentExecutorService (ToolContext)
+    RbacModule,      // RbacService → PermissionsGuard on AgentController
   ],
   controllers: [AgentController],
   providers: [
@@ -42,8 +38,8 @@ import { DocumentsModule }       from '../documents/documents.module';
     AgentEventsListener,
   ],
   exports: [
-    AgentExecutorService,  // exported in case ConversationsModule ever delegates to it
-    AgentMetricsService,   // exported so MetricsController can merge the registry
+    AgentExecutorService,
+    AgentMetricsService,
   ],
 })
 export class AgentModule {}

@@ -11,17 +11,19 @@ const mockPipeline = {
 };
 
 const mockRedisClient = {
-  get:      jest.fn(),
-  setex:    jest.fn(),
-  del:      jest.fn(),
-  exists:   jest.fn(),
-  sadd:     jest.fn(),
-  scard:    jest.fn(),
-  expire:   jest.fn(),
-  incr:     jest.fn(),
-  ping:     jest.fn(),
-  quit:     jest.fn(),
-  pipeline: jest.fn().mockReturnValue(mockPipeline),
+  get:         jest.fn(),
+  setex:       jest.fn(),
+  del:         jest.fn(),
+  exists:      jest.fn(),
+  sadd:        jest.fn(),
+  scard:       jest.fn(),
+  expire:      jest.fn(),
+  incr:        jest.fn(),
+  incrbyfloat: jest.fn(),
+  ttl:         jest.fn(),
+  ping:        jest.fn(),
+  quit:        jest.fn(),
+  pipeline:    jest.fn().mockReturnValue(mockPipeline),
 };
 
 // RedisService mock — just exposes the client property CacheService reads
@@ -208,4 +210,45 @@ describe('CacheService', () => {
       expect(service.getClient()).toBe(mockRedisClient);
     });
   });
+
+  // ── incrByFloat (MCP budget tracking) ──────────────────────────────────────
+
+  describe('incrByFloat', () => {
+    it('calls Redis incrbyfloat with the correct key and increment', async () => {
+      mockRedisClient.incrbyfloat = jest.fn().mockResolvedValue('0.05');
+      await service.incrByFloat('mcp:budget:user-1:2026-05', 0.05);
+      expect(mockRedisClient.incrbyfloat).toHaveBeenCalledWith(
+        'mcp:budget:user-1:2026-05', 0.05,
+      );
+    });
+
+    it('returns the result as a number', async () => {
+      mockRedisClient.incrbyfloat = jest.fn().mockResolvedValue('0.12');
+      const result = await service.incrByFloat('budget-key', 0.07);
+      expect(result).toBe(0.12);
+    });
+  });
+
+  // ── ttl ─────────────────────────────────────────────────────────────────────
+
+  describe('ttl', () => {
+    it('returns -1 when key has no expiry set', async () => {
+      mockRedisClient.ttl = jest.fn().mockResolvedValue(-1);
+      const result = await service.ttl('some-key');
+      expect(result).toBe(-1);
+    });
+
+    it('returns the remaining TTL in seconds', async () => {
+      mockRedisClient.ttl = jest.fn().mockResolvedValue(86400);
+      const result = await service.ttl('some-key');
+      expect(result).toBe(86400);
+    });
+
+    it('returns -2 when key does not exist', async () => {
+      mockRedisClient.ttl = jest.fn().mockResolvedValue(-2);
+      const result = await service.ttl('missing-key');
+      expect(result).toBe(-2);
+    });
+  });
+
 });
